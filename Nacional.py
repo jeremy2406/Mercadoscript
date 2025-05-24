@@ -1,313 +1,427 @@
-import time
+import requests
 import csv
+import time
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
 import re
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from collections import defaultdict
 
-def configurar_driver():
-    """Configurar el driver de Chrome con opciones optimizadas"""
-    options = Options()
-    options.add_argument('--headless')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-extensions')
-    options.add_argument('--disable-logging')
-    options.add_argument('--disable-background-timer-throttling')
-    options.add_argument('--disable-backgrounding-occluded-windows')
-    options.add_argument('--disable-renderer-backgrounding')
-    options.add_argument('--disable-features=TranslateUI')
-    options.add_argument('--disable-ipc-flooding-protection')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+def obtener_pagina(url, timeout=60, reintentos=5):
+    """Obtener contenido de una página web con reintentos agresivos"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'no-cache'
+    }
     
-    # Configuraciones adicionales para estabilidad
-    options.add_experimental_option('excludeSwitches', ['enable-logging'])
-    options.add_experimental_option('useAutomationExtension', False)
-    options.add_experimental_option('prefs', {
-        'profile.default_content_setting_values.notifications': 2,
-        'profile.default_content_settings.popups': 0,
-        'profile.managed_default_content_settings.images': 2
-    })
+    for intento in range(reintentos):
+        try:
+            print(f"🔄 Intento {intento + 1}/{reintentos} para: {url[:80]}...")
+            session = requests.Session()
+            response = session.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            print(f"✔ Página obtenida exitosamente (Status: {response.status_code}, Tamaño: {len(response.text)} chars)")
+            return response.text
+        except requests.exceptions.Timeout:
+            print(f"⏰ Timeout en intento {intento + 1}")
+            if intento < reintentos - 1:
+                time.sleep(10)
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error en intento {intento + 1}: {e}")
+            if intento < reintentos - 1:
+                time.sleep(10)
+        except Exception as e:
+            print(f"🚨 Error inesperado en intento {intento + 1}: {e}")
+            if intento < reintentos - 1:
+                time.sleep(10)
     
-    try:
-        return webdriver.Chrome(options=options)
-    except Exception as e:
-        print(f"⚠ Error creando driver con servicio personalizado: {e}")
-        print("🔄 Intentando con configuración básica...")
-        return webdriver.Chrome(options=options)
+    print(f"❌ FALLÓ después de {reintentos} intentos")
+    return None
 
-def buscar_categorias(driver):
-    """Buscar categorías usando múltiples selectores"""
-    selectores_categorias = [
-        'ul.menu-categorias li a',
-        '.menu-categorias a',
-        'nav ul li a',
-        '.category-menu a',
-        '.main-menu a',
-        'ul li a[href*="category"]',
-        'a[href*="categoria"]',
-        '.navbar a',
-        '.navigation a'
+def encontrar_todos_los_enlaces(soup, base_url):
+    """Encontrar TODOS los enlaces posibles que puedan ser categorías"""
+    todos_enlaces = set()
+    
+    # Encontrar todos los enlaces en la página
+    enlaces = soup.find_all('a', href=True)
+    print(f"🔍 Analizando {len(enlaces)} enlaces en total...")
+    
+    palabras_clave = [
+        'categoria', 'category', 'departamento', 'seccion', 'productos',
+        'product', 'item', 'catalogo', 'tienda', 'shop', 'store',
+        'carne', 'lacteo', 'bebida', 'limpieza', 'hogar', 'personal',
+        'fruta', 'verdura', 'panaderia', 'congelado', 'dulce', 'snack'
     ]
     
-    enlaces_categorias = []
-    
-    for selector in selectores_categorias:
-        try:
-            elementos = driver.find_elements(By.CSS_SELECTOR, selector)
-            enlaces = [elem.get_attribute('href') for elem in elementos 
-                      if elem.get_attribute('href') and 
-                      ('categoria' in elem.get_attribute('href').lower() or 
-                       'category' in elem.get_attribute('href').lower())]
-            
-            if enlaces:
-                enlaces_categorias.extend(enlaces)
-                print(f'✔ Encontradas {len(enlaces)} categorías con selector: {selector}')
-                break
-        except Exception as e:
+    for enlace in enlaces:
+        href = enlace.get('href', '').strip()
+        texto = enlace.get_text().strip()
+        
+        if not href or href in ['#', '/', 'javascript:void(0)']:
             continue
+            
+        url_completa = urljoin(base_url, href)
+        
+        # Filtrar por URL que contenga palabras clave
+        url_lower = url_completa.lower()
+        texto_lower = texto.lower()
+        
+        es_categoria = False
+        
+        # Verificar si es una categoría por URL
+        for palabra in palabras_clave:
+            if palabra in url_lower:
+                es_categoria = True
+                break
+        
+        # Verificar si es una categoría por texto del enlace
+        if not es_categoria and texto and len(texto) > 2 and len(texto) < 100:
+            for palabra in palabras_clave:
+                if palabra in texto_lower:
+                    es_categoria = True
+                    break
+        
+        # También incluir enlaces que tengan cierta estructura
+        if not es_categoria:
+            if re.search(r'/[a-zA-Z-]+/[a-zA-Z-]+', href) or 'id=' in href or 'cat=' in href:
+                es_categoria = True
+        
+        if es_categoria and url_completa != base_url:
+            nombre_categoria = texto if texto else href.split('/')[-1]
+            todos_enlaces.add((url_completa, nombre_categoria))
     
-    # Eliminar duplicados manteniendo el orden
-    enlaces_unicos = list(dict.fromkeys(enlaces_categorias))
-    return enlaces_unicos
+    print(f"✔ Encontrados {len(todos_enlaces)} enlaces potenciales de categorías")
+    return list(todos_enlaces)
 
-def buscar_productos(driver):
-    """Buscar productos usando múltiples selectores"""
+def buscar_productos_exhaustivo(soup):
+    """Buscar productos usando TODOS los selectores posibles"""
     selectores_productos = [
-        'li.product-item',
-        '.product-item',
-        '.product',
-        '.item-product',
-        'div[class*="product"]',
-        '.grid-item',
-        '.product-card',
-        '[data-product-id]'
+        # Selectores específicos comunes
+        '.product-item', '.product', '.item-product', '.producto',
+        'div[class*="product"]', 'li[class*="product"]',
+        '.grid-item', '.product-card', '.item', '.card',
+        '[data-product-id]', '[data-product]', '[data-item]',
+        
+        # Selectores de listas
+        'ul.products li', 'ol.products li', '.products .item',
+        '.product-list .item', '.items-list .item',
+        
+        # Selectores de grillas
+        '.grid .item', '.row .col', '.flex-item',
+        '.catalog-item', '.shop-item', '.store-item',
+        
+        # Selectores más genéricos
+        'article', '.article', 'div[itemtype*="Product"]',
+        '[class*="item"]', '[class*="card"]'
     ]
     
     productos_encontrados = []
     
     for selector in selectores_productos:
         try:
-            items = driver.find_elements(By.CSS_SELECTOR, selector)
-            if items:
+            items = soup.select(selector)
+            if items and len(items) > len(productos_encontrados):
                 productos_encontrados = items
-                print(f'✔ Encontrados {len(items)} productos con selector: {selector}')
-                break
-        except Exception:
+                print(f"✔ Mejor resultado: {len(items)} productos con selector: {selector}")
+        except Exception as e:
             continue
+    
+    # Si no encontramos productos con selectores específicos, buscar por patrones
+    if len(productos_encontrados) < 5:
+        print("🔍 Buscando productos por patrones en el HTML...")
+        
+        # Buscar divs que contengan información de precio
+        divs_con_precio = soup.find_all('div', text=re.compile(r'\$|precio|price|€|₡|₵', re.I))
+        divs_padre_precio = []
+        for div in divs_con_precio:
+            parent = div.parent
+            if parent:
+                divs_padre_precio.append(parent)
+        
+        if divs_padre_precio:
+            productos_encontrados = divs_padre_precio
+            print(f"✔ Encontrados {len(productos_encontrados)} productos por patrón de precio")
     
     return productos_encontrados
 
-def extraer_info_producto(item):
-    """Extraer información del producto usando múltiples selectores"""
-    # Selectores para nombres
-    selectores_nombre = [
-        'a.product-item-link',
-        '.product-name a',
-        '.product-title',
-        'h2 a',
-        'h3 a',
-        '.name a',
-        'a[title]'
-    ]
-    
-    # Selectores para precios
-    selectores_precio = [
-        'span.price',
-        '.price',
-        '.precio',
-        '[class*="price"]',
-        '.cost',
-        '.amount'
-    ]
-    
+def extraer_info_producto_exhaustivo(item):
+    """Extraer información del producto de manera exhaustiva"""
     nombre = 'Nombre no disponible'
     precio = 'Precio no disponible'
+    
+    # Selectores para nombres (más exhaustivos)
+    selectores_nombre = [
+        'a.product-item-link', '.product-name a', '.product-title',
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        '.name a', '.title a', 'a[title]',
+        '.product-name', '.name', '.title', '.titulo',
+        '[class*="name"]', '[class*="title"]', '[class*="titulo"]',
+        'a', 'span.name', 'div.name', 'p.name'
+    ]
+    
+    # Selectores para precios (más exhaustivos)
+    selectores_precio = [
+        'span.price', '.price', '.precio', '.cost', '.amount',
+        '[class*="price"]', '[class*="precio"]', '[class*="cost"]',
+        'span[class*="$"]', 'div[class*="$"]',
+        '.currency', '.money', '.value', '.valor'
+    ]
     
     # Buscar nombre
     for selector in selectores_nombre:
         try:
-            elemento = item.find_element(By.CSS_SELECTOR, selector)
-            nombre = elemento.text.strip() or elemento.get_attribute('title') or elemento.get_attribute('alt')
-            if nombre and nombre != '':
-                break
+            elemento = item.select_one(selector)
+            if elemento:
+                # Intentar obtener texto de diferentes maneras
+                texto_candidatos = [
+                    elemento.get_text().strip(),
+                    elemento.get('title', '').strip(),
+                    elemento.get('alt', '').strip(),
+                    elemento.get('data-name', '').strip()
+                ]
+                
+                for texto in texto_candidatos:
+                    if texto and len(texto) > 2 and len(texto) < 200:
+                        nombre = texto
+                        break
+                
+                if nombre != 'Nombre no disponible':
+                    break
         except:
             continue
     
     # Buscar precio
     for selector in selectores_precio:
         try:
-            elemento = item.find_element(By.CSS_SELECTOR, selector)
-            precio_texto = elemento.text.strip()
-            if precio_texto and precio_texto != '':
-                precio = precio_texto
-                break
+            elemento = item.select_one(selector)
+            if elemento:
+                precio_texto = elemento.get_text().strip()
+                if precio_texto and ('$' in precio_texto or '₡' in precio_texto or 
+                                   re.search(r'\d+[.,]\d+', precio_texto)):
+                    precio = precio_texto
+                    break
         except:
             continue
     
+    # Si no encontró precio, buscar números que parezcan precios
+    if precio == 'Precio no disponible':
+        texto_completo = item.get_text()
+        patrones_precio = [
+            r'\$\s*\d+[.,]?\d*',
+            r'₡\s*\d+[.,]?\d*',
+            r'\d+[.,]\d+\s*₡',
+            r'\d+[.,]\d+\s*\$',
+            r'precio[:\s]*\d+[.,]?\d*',
+            r'\d{1,6}[.,]\d{2}'
+        ]
+        
+        for patron in patrones_precio:
+            match = re.search(patron, texto_completo, re.I)
+            if match:
+                precio = match.group()
+                break
+    
     return nombre, precio
 
-def main():
-    driver = None
-    productos = []
+def buscar_paginacion(soup, base_url):
+    """Buscar enlaces de paginación para obtener más productos"""
+    enlaces_paginacion = set()
     
-    try:
-        print("🔧 Configurando WebDriver...")
-        driver = configurar_driver()
-        
-        # Configurar timeouts más largos
-        driver.set_page_load_timeout(60)
-        driver.implicitly_wait(10)
-        
-        print("🌐 Accediendo al sitio web...")
+    selectores_paginacion = [
+        '.pagination a', '.pager a', '.page-numbers a',
+        'a[href*="page"]', 'a[href*="p="]', 'a[href*="pagina"]',
+        '.next a', '.siguiente a', 'a.next', 'a.siguiente',
+        '[class*="pagination"] a', '[class*="pager"] a'
+    ]
+    
+    for selector in selectores_paginacion:
         try:
-            driver.get('https://supermercadosnacional.com/')
-        except Exception as e:
-            print(f"❌ Error accediendo al sitio: {e}")
-            print("🔄 Intentando con timeout extendido...")
-            driver.set_page_load_timeout(120)
-            driver.get('https://supermercadosnacional.com/')
+            elementos = soup.select(selector)
+            for elem in elementos:
+                href = elem.get('href')
+                if href:
+                    url_completa = urljoin(base_url, href)
+                    enlaces_paginacion.add(url_completa)
+        except:
+            continue
+    
+    return list(enlaces_paginacion)
+
+def procesar_categoria_completa(url_categoria, nombre_categoria, base_url):
+    """Procesar una categoría completamente incluyendo todas sus páginas"""
+    print(f"\n🏪 PROCESANDO CATEGORÍA COMPLETA: {nombre_categoria}")
+    print(f"🔗 URL: {url_categoria}")
+    
+    productos_categoria = []
+    paginas_procesadas = set()
+    paginas_por_procesar = [url_categoria]
+    
+    while paginas_por_procesar:
+        url_actual = paginas_por_procesar.pop(0)
         
-        # Esperar a que la página cargue completamente
-        wait = WebDriverWait(driver, 30)
-        try:
-            wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-            print("✔ Página cargada correctamente")
-        except TimeoutException:
-            print("⚠ Timeout esperando la página, continuando...")
+        if url_actual in paginas_procesadas:
+            continue
+            
+        paginas_procesadas.add(url_actual)
+        print(f"\n📄 Procesando página: {url_actual}")
         
+        html_pagina = obtener_pagina(url_actual)
+        if not html_pagina:
+            continue
+        
+        soup = BeautifulSoup(html_pagina, 'html.parser')
+        
+        # Buscar productos en esta página
+        items = buscar_productos_exhaustivo(soup)
+        productos_en_pagina = 0
+        
+        if items:
+            print(f"🛍 Encontrados {len(items)} productos en esta página")
+            
+            for item in items:
+                try:
+                    nombre, precio = extraer_info_producto_exhaustivo(item)
+                    
+                    if nombre != 'Nombre no disponible' and len(nombre.strip()) > 2:
+                        productos_categoria.append({
+                            'Nombre': nombre,
+                            'Precio': precio,
+                            'Categoría': nombre_categoria,
+                            'URL_Categoria': url_categoria
+                        })
+                        productos_en_pagina += 1
+                
+                except Exception as e:
+                    continue
+            
+            print(f"✅ {productos_en_pagina} productos válidos extraídos de esta página")
+        else:
+            print("⚠ No se encontraron productos en esta página")
+        
+        # Buscar más páginas (paginación)
+        enlaces_paginacion = buscar_paginacion(soup, base_url)
+        for enlace in enlaces_paginacion:
+            if enlace not in paginas_procesadas and enlace not in paginas_por_procesar:
+                paginas_por_procesar.append(enlace)
+                print(f"📋 Agregada página para procesar: {enlace}")
+        
+        # Pausa entre páginas
         time.sleep(3)
         
-        print("🔍 Buscando categorías...")
-        enlaces_categorias = buscar_categorias(driver)
-        
-        if not enlaces_categorias:
-            print("⚠ No se encontraron categorías específicas. Buscando productos en la página principal...")
-            enlaces_categorias = [driver.current_url]
-        else:
-            print(f'✔ Se encontraron {len(enlaces_categorias)} categorías.')
-        
-        # Limitar a las primeras 10 categorías para evitar timeout
-        enlaces_categorias = enlaces_categorias[:10]
-        
-        for i, enlace in enumerate(enlaces_categorias, 1):
-            print(f"\n📂 Procesando categoría {i}/{len(enlaces_categorias)}: {enlace}")
-            
-            try:
-                driver.get(enlace)
-                time.sleep(3)
-                
-                # Intentar obtener el nombre de la categoría
-                selectores_titulo = ['h1.page-title', 'h1', '.page-title', '.category-title', 'title']
-                categoria_nombre = f'Categoría_{i}'
-                
-                for selector in selectores_titulo:
-                    try:
-                        elemento = driver.find_element(By.CSS_SELECTOR, selector)
-                        categoria_nombre = elemento.text.strip()
-                        if categoria_nombre:
-                            break
-                    except:
-                        continue
-                
-                print(f"📁 Categoría: {categoria_nombre}")
-                
-                # Buscar productos
-                items = buscar_productos(driver)
-                
-                if not items:
-                    print(f"⚠ No se encontraron productos en {categoria_nombre}")
-                    continue
-                
-                print(f'🔍 {len(items)} productos encontrados en: {categoria_nombre}')
-                
-                # Extraer información de cada producto
-                for j, item in enumerate(items[:50]):  # Limitar a 50 productos por categoría
-                    try:
-                        nombre, precio = extraer_info_producto(item)
-                        
-                        if nombre != 'Nombre no disponible':
-                            productos.append({
-                                'Nombre': nombre,
-                                'Precio': precio,
-                                'Categoría': categoria_nombre
-                            })
-                        
-                        if (j + 1) % 10 == 0:
-                            print(f"   ✔ Procesados {j + 1}/{len(items[:50])} productos...")
-                            
-                    except Exception as e:
-                        print(f"   ⚠ Error procesando producto {j + 1}: {e}")
-                        continue
-                
-            except Exception as e:
-                print(f"❌ Error procesando categoría {enlace}: {e}")
-                continue
-        
-        # Guardar resultados
-        if productos:
-            # Crear nombre de archivo con timestamp
-            timestamp = int(time.time())
-            nombre_archivo = f'inventario_supermercado_{timestamp}.csv'
-            
-            with open(nombre_archivo, mode='w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=['Nombre', 'Precio', 'Categoría'])
-                writer.writeheader()
-                for producto in productos:
-                    writer.writerow(producto)
-            
-            print(f'\n✅ {len(productos)} productos guardados en {nombre_archivo}')
-            
-            # Mostrar resumen por categoría
-            categorias_resumen = {}
-            for producto in productos:
-                cat = producto['Categoría']
-                categorias_resumen[cat] = categorias_resumen.get(cat, 0) + 1
-            
-            print("\n📊 Resumen por categoría:")
-            for categoria, cantidad in categorias_resumen.items():
-                print(f"   • {categoria}: {cantidad} productos")
-                
-        else:
-            print('❗ No se extrajo ningún producto.')
-            
-            # Diagnóstico adicional
-            print("\n🔧 Diagnóstico:")
-            print("   • Verificando estructura de la página...")
-            
-            # Mostrar algunos elementos disponibles para debug
-            try:
-                all_links = driver.find_elements(By.TAG_NAME, "a")[:10]
-                print(f"   • Se encontraron {len(all_links)} enlaces en total")
-                
-                for link in all_links:
-                    href = link.get_attribute('href')
-                    text = link.text.strip()[:50]
-                    if href and text:
-                        print(f"     - {text}: {href}")
-                        
-            except Exception as e:
-                print(f"   • Error en diagnóstico: {e}")
+        # Limitar para evitar bucles infinitos
+        if len(paginas_procesadas) > 20:
+            print("⚠ Límite de páginas alcanzado para esta categoría")
+            break
     
-    except Exception as e:
-        print(f"❌ Error general: {e}")
-        import traceback
-        print("🔍 Detalles del error:")
-        print(traceback.format_exc())
+    print(f"🎯 TOTAL EN CATEGORÍA '{nombre_categoria}': {len(productos_categoria)} productos")
+    return productos_categoria
+
+def main():
+    base_url = 'https://supermercadosnacional.com/'
+    todos_productos = []
     
-    finally:
-        if driver:
-            try:
-                driver.quit()
-                print("🔧 WebDriver cerrado correctamente")
-            except Exception as e:
-                print(f"⚠ Error cerrando WebDriver: {e}")
-        print("\n🏁 Script completado.")
+    print("🚀 INICIANDO SCRAPING EXHAUSTIVO")
+    print("=" * 80)
+    
+    # Obtener página principal
+    print("📄 Obteniendo página principal...")
+    html_principal = obtener_pagina(base_url)
+    
+    if not html_principal:
+        print("❌ No se pudo obtener la página principal")
+        return
+    
+    soup_principal = BeautifulSoup(html_principal, 'html.parser')
+    
+    # Encontrar TODOS los enlaces posibles
+    print("\n🔍 BUSCANDO TODOS LOS ENLACES POSIBLES...")
+    todas_categorias = encontrar_todos_los_enlaces(soup_principal, base_url)
+    
+    if not todas_categorias:
+        print("❌ No se encontraron categorías")
+        return
+    
+    print(f"\n📊 ENCONTRADAS {len(todas_categorias)} CATEGORÍAS POTENCIALES")
+    print("\n📋 Lista de categorías a procesar:")
+    for i, (url, nombre) in enumerate(todas_categorias, 1):
+        print(f"  {i:3d}. {nombre[:60]}")
+    
+    # Procesar cada categoría de manera exhaustiva
+    contador_categorias = 0
+    contador_productos_total = 0
+    
+    for i, (url_categoria, nombre_categoria) in enumerate(todas_categorias, 1):
+        try:
+            print(f"\n{'='*20} CATEGORÍA {i}/{len(todas_categorias)} {'='*20}")
+            
+            productos_categoria = procesar_categoria_completa(url_categoria, nombre_categoria, base_url)
+            
+            if productos_categoria:
+                todos_productos.extend(productos_categoria)
+                contador_categorias += 1
+                contador_productos_total += len(productos_categoria)
+                
+                print(f"✅ Categoría completada: {len(productos_categoria)} productos")
+            else:
+                print(f"⚠ Sin productos en: {nombre_categoria}")
+            
+            # Guardar progreso cada 10 categorías
+            if i % 10 == 0:
+                timestamp = int(time.time())
+                archivo_progreso = f'progreso_inventario_{timestamp}.csv'
+                
+                with open(archivo_progreso, mode='w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=['Nombre', 'Precio', 'Categoría', 'URL_Categoria'])
+                    writer.writeheader()
+                    for producto in todos_productos:
+                        writer.writerow(producto)
+                
+                print(f"💾 PROGRESO GUARDADO: {len(todos_productos)} productos en {archivo_progreso}")
+                
+        except Exception as e:
+            print(f"❌ Error procesando {nombre_categoria}: {e}")
+            continue
+    
+    # Guardar resultados finales
+    if todos_productos:
+        timestamp = int(time.time())
+        nombre_archivo = f'inventario_nacional_{timestamp}.csv'
+        
+        with open(nombre_archivo, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['Nombre', 'Precio', 'Categoría', 'URL_Categoria'])
+            writer.writeheader()
+            for producto in todos_productos:
+                writer.writerow(producto)
+        
+        print(f'\n🎉 SCRAPING COMPLETADO')
+        print(f'✅ {len(todos_productos)} productos guardados en {nombre_archivo}')
+        
+        # Resumen por categoría
+        categorias_resumen = defaultdict(int)
+        for producto in todos_productos:
+            categorias_resumen[producto['Categoría']] += 1
+        
+        print(f"\n📊 RESUMEN FINAL:")
+        print(f"   • Categorías procesadas: {contador_categorias}")
+        print(f"   • Total de productos: {len(todos_productos)}")
+        print(f"\n📋 Productos por categoría:")
+        
+        for categoria, cantidad in sorted(categorias_resumen.items(), key=lambda x: x[1], reverse=True):
+            print(f"   • {categoria[:50]}: {cantidad} productos")
+            
+    else:
+        print('\n❗ No se extrajo ningún producto.')
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n⏹ Script interrumpido por el usuario")
+    except Exception as e:
+        print(f"\n❌ Error no controlado: {e}")
+        import traceback
+        print(traceback.format_exc())
