@@ -42,20 +42,112 @@ def obtener_pagina(url, timeout=60, reintentos=5):
     print(f"❌ FALLÓ después de {reintentos} intentos")
     return None
 
-def encontrar_todos_los_enlaces(soup, base_url):
-    """Encontrar TODOS los enlaces posibles que puedan ser categorías"""
-    todos_enlaces = set()
+def es_categoria_valida(url, texto):
+    """Filtrar y determinar si es una categoría de productos válida"""
     
-    # Encontrar todos los enlaces en la página
+    # Lista de términos que NO son categorías válidas
+    excluir_terminos = [
+        'ver todo', 'ver todover todo', 'mis datos', 'mi cuenta', 'mi carrito', 'mis listas', 
+        'mis ordenes', 'cerrar sesión', 'iniciar sesión', 'crear cuenta', 'nuestras tiendas',
+        'políticas de privacidad', 'retiro en tienda', 'supermercadosnacional',
+        'entrenamiento', 'ofertas de la semana', 'exclusivo online', 'prepara un desayuno',
+        'hasta un 15 de descuento', 'ofertas quincenazo', '3x2 vinos', 'culinary tours',
+        'javascript:', '#', 'aquí', '?q=', 'vinos-y-espumantes?vinos_3x2=1'
+    ]
+    
+    # Lista de términos que SÍ indican categorías válidas de productos
+    incluir_terminos = [
+        # Carnes y proteínas
+        'carne', 'res', 'pollo', 'cerdo', 'pavo', 'jamón', 'salami', 'chorizo', 'mortadela',
+        'pescado', 'mariscos', 'camarón', 'salmón', 'atún', 'gallina', 'codorniz',
+        
+        # Lácteos y huevos
+        'leche', 'queso', 'yogurt', 'mantequilla', 'crema', 'huevos', 'lácteos',
+        
+        # Frutas y vegetales
+        'fruta', 'vegetal', 'verdura', 'hortalizas', 'manzana', 'pera', 'plátano',
+        'lechuga', 'tomate', 'cebolla', 'papa', 'yuca', 'uva', 'fresa',
+        
+        # Panadería y cereales
+        'pan', 'panadería', 'galleta', 'cereal', 'avena', 'arroz', 'pasta', 'harina',
+        'repostería', 'bizcocho', 'croissant', 'bagel',
+        
+        # Bebidas
+        'bebida', 'agua', 'jugo', 'refresco', 'soda', 'café', 'té', 'vino', 'cerveza',
+        'whisky', 'ron', 'vodka', 'licor', 'champagne', 'malta', 'energizante',
+        
+        # Limpieza y hogar
+        'limpieza', 'detergente', 'jabón', 'cloro', 'desinfectante', 'papel',
+        'servilleta', 'ambientador', 'fregador', 'esponja',
+        
+        # Cuidado personal
+        'shampoo', 'acondicionador', 'crema', 'desodorante', 'jabón', 'pasta dental',
+        'cepillo', 'pañal', 'toalla', 'protector',
+        
+        # Condimentos y especias
+        'sal', 'azúcar', 'aceite', 'vinagre', 'salsa', 'condimento', 'especia',
+        'mayonesa', 'mostaza', 'catchup', 'aderezo',
+        
+        # Conservas y enlatados
+        'conserva', 'enlatado', 'mermelada', 'miel', 'dulce', 'chocolate',
+        
+        # Congelados
+        'congelado', 'helado', 'pizza congelada', 'vegetal congelado',
+        
+        # Mascotas
+        'gato', 'perro', 'mascota', 'alimento para'
+    ]
+    
+    texto_lower = texto.lower().strip()
+    url_lower = url.lower()
+    
+    # Primero verificar exclusiones
+    for termino in excluir_terminos:
+        if termino in texto_lower or termino in url_lower:
+            return False
+    
+    # Filtrar URLs que claramente no son categorías
+    if any(x in url_lower for x in ['javascript:', '#', 'mailto:', 'tel:']):
+        return False
+    
+    # Filtrar textos muy cortos o muy largos
+    if len(texto.strip()) < 3 or len(texto.strip()) > 50:
+        return False
+    
+    # Verificar si contiene términos de categorías válidas
+    for termino in incluir_terminos:
+        if termino in texto_lower:
+            return True
+    
+    # Verificar patrones en la URL que indiquen categorías
+    patrones_url_validos = [
+        r'/categoria/',
+        r'/departamento/',
+        r'/seccion/',
+        r'/[a-zA-Z-]+-y-[a-zA-Z-]+',  # ej: frutas-y-vegetales
+        r'/[a-zA-Z-]+(?:es|as|os)$',   # terminaciones en plural
+    ]
+    
+    for patron in patrones_url_validos:
+        if re.search(patron, url_lower):
+            return True
+    
+    # Si el texto parece ser una categoría (no contiene números, símbolos raros, etc.)
+    if re.match(r'^[a-zA-ZáéíóúñÁÉÍÓÚÑ\s\-]+$', texto) and len(texto.split()) <= 4:
+        # Verificar que no sea una frase de navegación común
+        frases_navegacion = ['ver más', 'mostrar más', 'cargar más', 'página siguiente', 'anterior']
+        if not any(frase in texto_lower for frase in frases_navegacion):
+            return True
+    
+    return False
+
+def encontrar_categorias_validas(soup, base_url):
+    """Encontrar solo categorías válidas de productos"""
+    categorias_validas = set()
+    
+    # Encontrar todos los enlaces
     enlaces = soup.find_all('a', href=True)
     print(f"Analizando {len(enlaces)} enlaces en total...")
-    
-    palabras_clave = [
-        'categoria', 'category', 'departamento', 'seccion', 'productos',
-        'product', 'item', 'catalogo', 'tienda', 'shop', 'store',
-        'carne', 'lacteo', 'bebida', 'limpieza', 'hogar', 'personal',
-        'fruta', 'verdura', 'panaderia', 'congelado', 'dulce', 'snack'
-    ]
     
     for enlace in enlaces:
         href = enlace.get('href', '').strip()
@@ -66,36 +158,12 @@ def encontrar_todos_los_enlaces(soup, base_url):
             
         url_completa = urljoin(base_url, href)
         
-        # Filtrar por URL que contenga palabras clave
-        url_lower = url_completa.lower()
-        texto_lower = texto.lower()
-        
-        es_categoria = False
-        
-        # Verificar si es una categoría por URL
-        for palabra in palabras_clave:
-            if palabra in url_lower:
-                es_categoria = True
-                break
-        
-        # Verificar si es una categoría por texto del enlace
-        if not es_categoria and texto and len(texto) > 2 and len(texto) < 100:
-            for palabra in palabras_clave:
-                if palabra in texto_lower:
-                    es_categoria = True
-                    break
-        
-        # También incluir enlaces que tengan cierta estructura
-        if not es_categoria:
-            if re.search(r'/[a-zA-Z-]+/[a-zA-Z-]+', href) or 'id=' in href or 'cat=' in href:
-                es_categoria = True
-        
-        if es_categoria and url_completa != base_url:
-            nombre_categoria = texto if texto else href.split('/')[-1]
-            todos_enlaces.add((url_completa, nombre_categoria))
+        # Aplicar filtros de validación
+        if es_categoria_valida(url_completa, texto):
+            categorias_validas.add((url_completa, texto))
     
-    print(f"✓ Encontrados {len(todos_enlaces)} enlaces potenciales de categorías")
-    return list(todos_enlaces)
+    print(f"✓ Filtradas a {len(categorias_validas)} categorías válidas")
+    return list(categorias_validas)
 
 def buscar_productos_exhaustivo(soup):
     """Buscar productos usando TODOS los selectores posibles"""
@@ -227,100 +295,56 @@ def extraer_info_producto_exhaustivo(item):
     
     return nombre, precio
 
-def buscar_paginacion(soup, base_url):
-    """Buscar enlaces de paginación para obtener más productos"""
-    enlaces_paginacion = set()
-    
-    selectores_paginacion = [
-        '.pagination a', '.pager a', '.page-numbers a',
-        'a[href*="page"]', 'a[href*="p="]', 'a[href*="pagina"]',
-        '.next a', '.siguiente a', 'a.next', 'a.siguiente',
-        '[class*="pagination"] a', '[class*="pager"] a'
-    ]
-    
-    for selector in selectores_paginacion:
-        try:
-            elementos = soup.select(selector)
-            for elem in elementos:
-                href = elem.get('href')
-                if href:
-                    url_completa = urljoin(base_url, href)
-                    enlaces_paginacion.add(url_completa)
-        except:
-            continue
-    
-    return list(enlaces_paginacion)
-
-def procesar_categoria_completa(url_categoria, nombre_categoria, base_url):
-    """Procesar una categoría limitada a 5 páginas máximo"""
+def procesar_categoria_simple(url_categoria, nombre_categoria):
+    """Procesar una categoría con UNA SOLA PÁGINA"""
     print(f"\n📂 PROCESANDO: {nombre_categoria}")
     print(f"URL: {url_categoria}")
     
     productos_categoria = []
-    paginas_procesadas = set()
-    paginas_por_procesar = [url_categoria]
-    MAX_PAGINAS = 5  # ✓ LÍMITE REDUCIDO A 5 PÁGINAS
     
-    while paginas_por_procesar and len(paginas_procesadas) < MAX_PAGINAS:
-        url_actual = paginas_por_procesar.pop(0)
+    # Obtener solo la primera página
+    html_pagina = obtener_pagina(url_categoria)
+    if not html_pagina:
+        print("❌ No se pudo obtener la página")
+        return []
+    
+    soup = BeautifulSoup(html_pagina, 'html.parser')
+    
+    # Buscar productos en esta página
+    items = buscar_productos_exhaustivo(soup)
+    productos_en_pagina = 0
+    
+    if items:
+        print(f"Encontrados {len(items)} productos en esta página")
         
-        if url_actual in paginas_procesadas:
-            continue
-            
-        paginas_procesadas.add(url_actual)
-        print(f"Página {len(paginas_procesadas)}/{MAX_PAGINAS}: {url_actual}")
-        
-        html_pagina = obtener_pagina(url_actual)
-        if not html_pagina:
-            continue
-        
-        soup = BeautifulSoup(html_pagina, 'html.parser')
-        
-        # Buscar productos en esta página
-        items = buscar_productos_exhaustivo(soup)
-        productos_en_pagina = 0
-        
-        if items:
-            print(f"Encontrados {len(items)} productos en esta página")
-            
-            for item in items:
-                try:
-                    nombre, precio = extraer_info_producto_exhaustivo(item)
-                    
-                    if nombre != 'Nombre no disponible' and len(nombre.strip()) > 2:
-                        productos_categoria.append({
-                            'Nombre': nombre,
-                            'Precio': precio,
-                            'Categoría': nombre_categoria,
-                            'URL_Categoria': url_categoria
-                        })
-                        productos_en_pagina += 1
+        for item in items:
+            try:
+                nombre, precio = extraer_info_producto_exhaustivo(item)
                 
-                except Exception as e:
-                    continue
+                if nombre != 'Nombre no disponible' and len(nombre.strip()) > 2:
+                    productos_categoria.append({
+                        'Nombre': nombre,
+                        'Precio': precio,
+                        'Categoría': nombre_categoria,
+                        'URL_Categoria': url_categoria
+                    })
+                    productos_en_pagina += 1
             
-            print(f"✓ {productos_en_pagina} productos válidos extraídos")
-        else:
-            print("Sin productos en esta página")
+            except Exception as e:
+                continue
         
-        # Buscar más páginas (paginación) solo si no hemos alcanzado el límite
-        if len(paginas_procesadas) < MAX_PAGINAS:
-            enlaces_paginacion = buscar_paginacion(soup, base_url)
-            for enlace in enlaces_paginacion:
-                if enlace not in paginas_procesadas and enlace not in paginas_por_procesar:
-                    paginas_por_procesar.append(enlace)
-        
-        # Pausa entre páginas
-        time.sleep(3)
+        print(f"✓ {productos_en_pagina} productos válidos extraídos")
+    else:
+        print("Sin productos en esta página")
     
-    print(f"✓ TOTAL EN '{nombre_categoria}': {len(productos_categoria)} productos ({len(paginas_procesadas)} páginas)")
+    print(f"✓ TOTAL EN '{nombre_categoria}': {len(productos_categoria)} productos")
     return productos_categoria
 
 def main():
     base_url = 'https://supermercadosnacional.com/'
     todos_productos = []
     
-    print("🚀 INICIANDO SCRAPING OPTIMIZADO")
+    print("🚀 INICIANDO SCRAPING OPTIMIZADO Y FILTRADO")
     print("=" * 80)
     
     # Obtener página principal
@@ -333,28 +357,28 @@ def main():
     
     soup_principal = BeautifulSoup(html_principal, 'html.parser')
     
-    # Encontrar TODOS los enlaces posibles
-    print("\nBUSCANDO ENLACES...")
-    todas_categorias = encontrar_todos_los_enlaces(soup_principal, base_url)
+    # Encontrar solo categorías válidas
+    print("\nBUSCANDO Y FILTRANDO CATEGORÍAS...")
+    categorias_validas = encontrar_categorias_validas(soup_principal, base_url)
     
-    if not todas_categorias:
-        print("❌ No se encontraron categorías")
+    if not categorias_validas:
+        print("❌ No se encontraron categorías válidas")
         return
     
-    print(f"\n📊 ENCONTRADAS {len(todas_categorias)} CATEGORÍAS")
+    print(f"\n📊 ENCONTRADAS {len(categorias_validas)} CATEGORÍAS VÁLIDAS")
     print("\nLista de categorías a procesar:")
-    for i, (url, nombre) in enumerate(todas_categorias, 1):
-        print(f"  {i:3d}. {nombre[:60]}")
+    for i, (url, nombre) in enumerate(categorias_validas, 1):
+        print(f"  {i:3d}. {nombre}")
     
-    # Procesar cada categoría de manera optimizada
+    # Procesar cada categoría (solo primera página)
     contador_categorias = 0
     contador_productos_total = 0
     
-    for i, (url_categoria, nombre_categoria) in enumerate(todas_categorias, 1):
+    for i, (url_categoria, nombre_categoria) in enumerate(categorias_validas, 1):
         try:
-            print(f"\n{'='*15} CATEGORÍA {i}/{len(todas_categorias)} {'='*15}")
+            print(f"\n{'='*15} CATEGORÍA {i}/{len(categorias_validas)} {'='*15}")
             
-            productos_categoria = procesar_categoria_completa(url_categoria, nombre_categoria, base_url)
+            productos_categoria = procesar_categoria_simple(url_categoria, nombre_categoria)
             
             if productos_categoria:
                 todos_productos.extend(productos_categoria)
@@ -365,8 +389,8 @@ def main():
             else:
                 print(f"Sin productos en: {nombre_categoria}")
             
-            # Guardar progreso cada 10 categorías
-            if i % 10 == 0:
+            # Guardar progreso cada 20 categorías
+            if i % 20 == 0:
                 timestamp = int(time.time())
                 archivo_progreso = f'progreso_inventario_{timestamp}.csv'
                 
@@ -377,6 +401,9 @@ def main():
                         writer.writerow(producto)
                 
                 print(f"💾 PROGRESO GUARDADO: {len(todos_productos)} productos")
+            
+            # Pausa entre categorías (reducida)
+            time.sleep(2)
                 
         except Exception as e:
             print(f"❌ Error procesando {nombre_categoria}: {e}")
@@ -385,7 +412,7 @@ def main():
     # Guardar resultados finales
     if todos_productos:
         timestamp = int(time.time())
-        nombre_archivo = f'inventario_nacional_{timestamp}.csv'
+        nombre_archivo = f'inventario_nacional_optimizado_{timestamp}.csv'
         
         with open(nombre_archivo, mode='w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=['Nombre', 'Precio', 'Categoría', 'URL_Categoria'])
@@ -407,7 +434,7 @@ def main():
         print(f"\nProductos por categoría:")
         
         for categoria, cantidad in sorted(categorias_resumen.items(), key=lambda x: x[1], reverse=True):
-            print(f"   {categoria[:50]}: {cantidad} productos")
+            print(f"   {categoria}: {cantidad} productos")
             
     else:
         print('\n❗ No se extrajo ningún producto.')
