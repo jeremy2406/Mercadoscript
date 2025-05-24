@@ -42,114 +42,168 @@ def obtener_pagina(url, timeout=60, reintentos=5):
     print(f"❌ FALLÓ después de {reintentos} intentos")
     return None
 
-def es_categoria_valida(url, texto):
-    """Filtrar y determinar si es una categoría de productos válida"""
+def es_categoria_supermercado(url, texto):
+    """Determinar si es una categoría específica de productos de supermercado"""
     
-    # Lista de términos que NO son categorías válidas
-    excluir_terminos = [
-        'ver todo', 'ver todover todo', 'mis datos', 'mi cuenta', 'mi carrito', 'mis listas', 
-        'mis ordenes', 'cerrar sesión', 'iniciar sesión', 'crear cuenta', 'nuestras tiendas',
-        'políticas de privacidad', 'retiro en tienda', 'supermercadosnacional',
-        'entrenamiento', 'ofertas de la semana', 'exclusivo online', 'prepara un desayuno',
-        'hasta un 15 de descuento', 'ofertas quincenazo', '3x2 vinos', 'culinary tours',
-        'javascript:', '#', 'aquí', '?q=', 'vinos-y-espumantes?vinos_3x2=1'
-    ]
-    
-    # Lista de términos que SÍ indican categorías válidas de productos
-    incluir_terminos = [
+    # Lista de términos que SÍ indican categorías válidas de SUPERMERCADO
+    categorias_supermercado = [
         # Carnes y proteínas
         'carne', 'res', 'pollo', 'cerdo', 'pavo', 'jamón', 'salami', 'chorizo', 'mortadela',
-        'pescado', 'mariscos', 'camarón', 'salmón', 'atún', 'gallina', 'codorniz',
+        'pescado', 'mariscos', 'camarón', 'salmón', 'atún', 'embutidos', 'carnicería',
         
         # Lácteos y huevos
-        'leche', 'queso', 'yogurt', 'mantequilla', 'crema', 'huevos', 'lácteos',
+        'leche', 'queso', 'yogurt', 'mantequilla', 'crema', 'huevos', 'lácteos', 'yogur',
         
         # Frutas y vegetales
-        'fruta', 'vegetal', 'verdura', 'hortalizas', 'manzana', 'pera', 'plátano',
-        'lechuga', 'tomate', 'cebolla', 'papa', 'yuca', 'uva', 'fresa',
+        'fruta', 'vegetal', 'verdura', 'hortalizas', 'vegetales', 'frutas',
+        'manzana', 'pera', 'plátano', 'banano', 'lechuga', 'tomate', 'cebolla', 
+        'papa', 'yuca', 'uva', 'fresa', 'naranja', 'limón',
         
         # Panadería y cereales
         'pan', 'panadería', 'galleta', 'cereal', 'avena', 'arroz', 'pasta', 'harina',
-        'repostería', 'bizcocho', 'croissant', 'bagel',
+        'repostería', 'panaderia', 'cereales', 'granos', 'harinas',
         
         # Bebidas
         'bebida', 'agua', 'jugo', 'refresco', 'soda', 'café', 'té', 'vino', 'cerveza',
-        'whisky', 'ron', 'vodka', 'licor', 'champagne', 'malta', 'energizante',
+        'whisky', 'ron', 'vodka', 'licor', 'malta', 'energizante', 'bebidas',
+        'jugos', 'refrescos', 'licores', 'vinos',
         
         # Limpieza y hogar
         'limpieza', 'detergente', 'jabón', 'cloro', 'desinfectante', 'papel',
-        'servilleta', 'ambientador', 'fregador', 'esponja',
+        'servilleta', 'ambientador', 'hogar', 'aseo',
         
         # Cuidado personal
-        'shampoo', 'acondicionador', 'crema', 'desodorante', 'jabón', 'pasta dental',
-        'cepillo', 'pañal', 'toalla', 'protector',
+        'shampoo', 'acondicionador', 'crema', 'desodorante', 'pasta dental',
+        'cepillo', 'pañal', 'toalla', 'protector', 'cuidado personal', 'higiene',
         
         # Condimentos y especias
         'sal', 'azúcar', 'aceite', 'vinagre', 'salsa', 'condimento', 'especia',
-        'mayonesa', 'mostaza', 'catchup', 'aderezo',
+        'mayonesa', 'mostaza', 'ketchup', 'aderezo', 'condimentos',
         
         # Conservas y enlatados
-        'conserva', 'enlatado', 'mermelada', 'miel', 'dulce', 'chocolate',
+        'conserva', 'enlatado', 'mermelada', 'miel', 'conservas', 'enlatados',
         
         # Congelados
-        'congelado', 'helado', 'pizza congelada', 'vegetal congelado',
+        'congelado', 'helado', 'congelados', 'helados',
         
         # Mascotas
-        'gato', 'perro', 'mascota', 'alimento para'
+        'gato', 'perro', 'mascota', 'alimento para mascotas', 'mascotas',
+        
+        # Categorías generales de supermercado
+        'despensa', 'abarrotes', 'comestibles', 'alimentación', 'alimentos',
+        'snacks', 'dulces', 'chocolate', 'galletas'
+    ]
+    
+    # Lista de términos que NO son categorías de supermercado
+    excluir_terminos = [
+        # Navegación y UI
+        'ver todo', 'ver todover todo', 'mis datos', 'mi cuenta', 'mi carrito', 'mis listas', 
+        'mis ordenes', 'cerrar sesión', 'iniciar sesión', 'crear cuenta', 'nuestras tiendas',
+        'políticas de privacidad', 'retiro en tienda', 'supermercadosnacional',
+        'aquí', 'inicio', 'contacto', 'ayuda', 'soporte',
+        
+        # Otras tiendas/marcas (no supermercado)
+        'cuesta libros', 'juguetón', 'bebemundo', 'bebémundo', 'casa cuesta', 'jumbo',
+        'bonos ccn', 'elasticsuite', 'trabaja con nosotros',
+        
+        # Promociones/ofertas generales
+        'entrenamiento', 'ofertas de la semana', 'exclusivo online', 'prepara un desayuno',
+        'hasta un 15 de descuento', 'ofertas quincenazo', '3x2 vinos', 'culinary tours',
+        
+        # URLs problemáticas
+        'javascript:', '#', '?q=', 'search', 'buscar', 'filtro'
     ]
     
     texto_lower = texto.lower().strip()
     url_lower = url.lower()
+    
+    # Filtrar URLs que claramente no son categorías
+    if any(x in url_lower for x in ['javascript:', '#', 'mailto:', 'tel:']):
+        return False
     
     # Primero verificar exclusiones
     for termino in excluir_terminos:
         if termino in texto_lower or termino in url_lower:
             return False
     
-    # Filtrar URLs que claramente no son categorías
-    if any(x in url_lower for x in ['javascript:', '#', 'mailto:', 'tel:']):
-        return False
-    
     # Filtrar textos muy cortos o muy largos
-    if len(texto.strip()) < 3 or len(texto.strip()) > 50:
+    if len(texto.strip()) < 3 or len(texto.strip()) > 60:
         return False
     
-    # Verificar si contiene términos de categorías válidas
-    for termino in incluir_terminos:
+    # RELAJAR LOS FILTROS: Verificar si contiene términos específicos de supermercado
+    for termino in categorias_supermercado:
         if termino in texto_lower:
+            print(f"    ✓ Coincidencia encontrada: '{texto}' contiene '{termino}'")
             return True
     
-    # Verificar patrones en la URL que indiquen categorías
-    patrones_url_validos = [
-        r'/categoria/',
-        r'/departamento/',
-        r'/seccion/',
+    # Verificar patrones en la URL que indiquen categorías de supermercado
+    patrones_url_supermercado = [
+        r'/categoria[s]?/',
+        r'/departamento[s]?/',
+        r'/seccion[es]?/',
+        r'/(frutas?|verduras?|vegetales?|carnes?|lacteos?|bebidas?|limpieza|panaderia)',
         r'/[a-zA-Z-]+-y-[a-zA-Z-]+',  # ej: frutas-y-vegetales
-        r'/[a-zA-Z-]+(?:es|as|os)$',   # terminaciones en plural
     ]
     
-    for patron in patrones_url_validos:
+    for patron in patrones_url_supermercado:
         if re.search(patron, url_lower):
+            print(f"    ✓ Patrón URL encontrado: '{url_lower}' coincide con {patron}")
             return True
     
-    # Si el texto parece ser una categoría (no contiene números, símbolos raros, etc.)
-    if re.match(r'^[a-zA-ZáéíóúñÁÉÍÓÚÑ\s\-]+$', texto) and len(texto.split()) <= 4:
-        # Verificar que no sea una frase de navegación común
-        frases_navegacion = ['ver más', 'mostrar más', 'cargar más', 'página siguiente', 'anterior']
-        if not any(frase in texto_lower for frase in frases_navegacion):
-            return True
+    # MODO DEBUG: Mostrar por qué se rechaza
+    if len(texto.strip()) >= 3 and len(texto.strip()) <= 60:
+        print(f"    ❌ Rechazado: '{texto}' (no coincide con términos de supermercado)")
     
     return False
 
-def encontrar_categorias_validas(soup, base_url):
-    """Encontrar solo categorías válidas de productos"""
+def encontrar_categorias_supermercado(soup, base_url):
+    """Encontrar específicamente categorías de productos de supermercado"""
     categorias_validas = set()
     
-    # Encontrar todos los enlaces
-    enlaces = soup.find_all('a', href=True)
-    print(f"Analizando {len(enlaces)} enlaces en total...")
+    # Buscar en TODAS las áreas posibles, empezando con las más específicas
+    areas_busqueda = [
+        # Selectores específicos comunes
+        '.nav a[href]', '.navigation a[href]', '.menu a[href]', 
+        '.main-menu a[href]', '.primary-menu a[href]', '.header-menu a[href]',
+        '.category-menu a[href]', '.departments a[href]', '.categories a[href]',
+        
+        # Selectores más genéricos
+        'nav a[href]', 'header a[href]', '.header a[href]',
+        'ul li a[href]', 'ol li a[href]',
+        
+        # Selectores de estructura común
+        '.container a[href]', '.wrapper a[href]', '.content a[href]',
+        
+        # Por último, todos los enlaces
+        'a[href]'
+    ]
     
-    for enlace in enlaces:
+    enlaces_encontrados = []
+    
+    # Probar cada selector y ver cuáles funcionan
+    for selector in areas_busqueda:
+        try:
+            elementos = soup.select(selector)
+            if elementos:
+                print(f"✓ Encontrados {len(elementos)} enlaces con selector: {selector}")
+                if len(elementos) > len(enlaces_encontrados):
+                    enlaces_encontrados = elementos
+                    if len(elementos) >= 50:  # Si encuentra muchos, usar estos
+                        break
+        except Exception as e:
+            continue
+    
+    print(f"Analizando {len(enlaces_encontrados)} enlaces en total...")
+    
+    # Debuggear algunos enlaces para entender la estructura
+    print("\n🔍 MUESTRA DE ENLACES ENCONTRADOS (primeros 20):")
+    for i, enlace in enumerate(enlaces_encontrados[:20]):
+        href = enlace.get('href', '').strip()
+        texto = enlace.get_text().strip()
+        print(f"  {i+1:2d}. '{texto}' -> {href}")
+    
+    # Procesar todos los enlaces
+    for enlace in enlaces_encontrados:
         href = enlace.get('href', '').strip()
         texto = enlace.get_text().strip()
         
@@ -158,11 +212,12 @@ def encontrar_categorias_validas(soup, base_url):
             
         url_completa = urljoin(base_url, href)
         
-        # Aplicar filtros de validación
-        if es_categoria_valida(url_completa, texto):
+        # Aplicar filtros específicos para supermercado
+        if es_categoria_supermercado(url_completa, texto):
             categorias_validas.add((url_completa, texto))
+            print(f"✓ Categoría válida encontrada: '{texto}' -> {url_completa}")
     
-    print(f"✓ Filtradas a {len(categorias_validas)} categorías válidas")
+    print(f"✓ Total de categorías de supermercado encontradas: {len(categorias_validas)}")
     return list(categorias_validas)
 
 def buscar_productos_exhaustivo(soup):
@@ -344,7 +399,7 @@ def main():
     base_url = 'https://supermercadosnacional.com/'
     todos_productos = []
     
-    print("🚀 INICIANDO SCRAPING OPTIMIZADO Y FILTRADO")
+    print("🚀 INICIANDO SCRAPING ESPECÍFICO PARA SUPERMERCADO")
     print("=" * 80)
     
     # Obtener página principal
@@ -357,15 +412,22 @@ def main():
     
     soup_principal = BeautifulSoup(html_principal, 'html.parser')
     
-    # Encontrar solo categorías válidas
-    print("\nBUSCANDO Y FILTRANDO CATEGORÍAS...")
-    categorias_validas = encontrar_categorias_validas(soup_principal, base_url)
+    # Encontrar solo categorías de supermercado
+    print("\nBUSCANDO CATEGORÍAS ESPECÍFICAS DE SUPERMERCADO...")
+    categorias_validas = encontrar_categorias_supermercado(soup_principal, base_url)
     
     if not categorias_validas:
-        print("❌ No se encontraron categorías válidas")
+        print("❌ No se encontraron categorías de supermercado válidas")
+        print("Mostrando algunos enlaces encontrados para depuración:")
+        enlaces_debug = soup_principal.find_all('a', href=True)[:20]
+        for enlace in enlaces_debug:
+            texto = enlace.get_text().strip()
+            href = enlace.get('href', '')
+            if texto and href:
+                print(f"  - {texto} -> {href}")
         return
     
-    print(f"\n📊 ENCONTRADAS {len(categorias_validas)} CATEGORÍAS VÁLIDAS")
+    print(f"\n📊 ENCONTRADAS {len(categorias_validas)} CATEGORÍAS DE SUPERMERCADO")
     print("\nLista de categorías a procesar:")
     for i, (url, nombre) in enumerate(categorias_validas, 1):
         print(f"  {i:3d}. {nombre}")
@@ -389,8 +451,8 @@ def main():
             else:
                 print(f"Sin productos en: {nombre_categoria}")
             
-            # Guardar progreso cada 20 categorías
-            if i % 20 == 0:
+            # Guardar progreso cada 10 categorías
+            if i % 10 == 0:
                 timestamp = int(time.time())
                 archivo_progreso = f'progreso_inventario_{timestamp}.csv'
                 
@@ -402,8 +464,8 @@ def main():
                 
                 print(f"💾 PROGRESO GUARDADO: {len(todos_productos)} productos")
             
-            # Pausa entre categorías (reducida)
-            time.sleep(2)
+            # Pausa entre categorías
+            time.sleep(3)
                 
         except Exception as e:
             print(f"❌ Error procesando {nombre_categoria}: {e}")
@@ -412,7 +474,7 @@ def main():
     # Guardar resultados finales
     if todos_productos:
         timestamp = int(time.time())
-        nombre_archivo = f'inventario_nacional_optimizado_{timestamp}.csv'
+        nombre_archivo = f'inventario_nacional_supermercado_{timestamp}.csv'
         
         with open(nombre_archivo, mode='w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=['Nombre', 'Precio', 'Categoría', 'URL_Categoria'])
@@ -438,6 +500,10 @@ def main():
             
     else:
         print('\n❗ No se extrajo ningún producto.')
+        print('\n🔍 SUGERENCIAS PARA DEPURACIÓN:')
+        print('   1. Verificar que el sitio web tenga un menú de categorías visible')
+        print('   2. Inspeccionar manualmente el HTML del sitio para identificar selectores')
+        print('   3. Considerar que el sitio podría requerir JavaScript para cargar categorías')
 
 if __name__ == "__main__":
     try:
