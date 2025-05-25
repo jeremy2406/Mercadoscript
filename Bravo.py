@@ -13,13 +13,14 @@ def obtener_pagina(url, timeout=30, reintentos=3):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        'Connection': 'keep-alive'
+        'Connection': 'keep-alive',
+        'Accept-Encoding': 'gzip, deflate, br'
     }
     
     for intento in range(reintentos):
         try:
             print(f"Obteniendo: {url[:60]}...")
-            response = requests.get(url, headers=headers, timeout=timeout)
+            response = requests.get(url, headers=headers, timeout=timeout, verify=False)
             response.raise_for_status()
             print(f"✓ Página obtenida ({response.status_code})")
             return response.text
@@ -86,7 +87,7 @@ def productos_son_similares(prod1, prod2, umbral_similitud=0.85):
     nombre1_norm = normalizar_texto(prod1['nombre'])
     nombre2_norm = normalizar_texto(prod2['nombre'])
     
-    # Verificar si un nombre está contenido en el otro (para casos como "Leche Dos Pinos" vs "Leche Dos Pinos 1L")
+    # Verificar si un nombre está contenido en el otro
     if nombre1_norm in nombre2_norm or nombre2_norm in nombre1_norm:
         # Si los nombres son similares, verificar precios
         precio1_norm = normalizar_precio(prod1['precio'])
@@ -119,7 +120,7 @@ def eliminar_duplicados_avanzado(productos):
     print(f"Productos originales: {len(productos)}")
     
     productos_unicos = []
-    productos_procesados = set()  # Para tracking de hashes únicos
+    productos_procesados = set()
     
     for i, producto_actual in enumerate(productos):
         
@@ -156,18 +157,19 @@ def eliminar_duplicados_avanzado(productos):
     return productos_unicos
 
 def es_categoria_valida(url, texto):
-    """Determinar si es una categoría válida de supermercado"""
+    """Determinar si es una categoría válida de supermercado - Super Bravo"""
     texto_lower = texto.lower().strip()
     url_lower = url.lower()
     
     # Excluir elementos de navegación y páginas no deseadas
     excluir = [
-        'ver todo', 'ver todover todo', 'mi cuenta', 'mi carrito', 'mis listas', 
+        'ver todo', 'ver mas', 'mi cuenta', 'mi carrito', 'mis listas', 
         'mis ordenes', 'cerrar sesión', 'iniciar sesión', 'crear cuenta', 
         'nuestras tiendas', 'políticas', 'retiro en tienda', 'ayuda', 'contacto',
-        'inicio', 'soporte', 'trabaja con nosotros', 'cuesta libros', 'juguetón', 
-        'bebemundo', 'casa cuesta', 'jumbo', 'bonos ccn', 'entrenamiento',
-        'ofertas de la semana', 'exclusivo online', 'javascript:', '#', 'mailto:', 'tel:'
+        'inicio', 'soporte', 'trabaja con nosotros', 'sucursales', 'home',
+        'ofertas', 'promociones', 'javascript:', '#', 'mailto:', 'tel:',
+        'login', 'register', 'cart', 'checkout', 'search', 'buscar',
+        'facebook', 'instagram', 'twitter', 'youtube', 'whatsapp'
     ]
     
     # Verificar exclusiones
@@ -179,18 +181,19 @@ def es_categoria_valida(url, texto):
     if len(texto.strip()) < 3 or len(texto.strip()) > 50:
         return False
     
-    # Categorías válidas de supermercado
+    # Categorías válidas de supermercado República Dominicana
     categorias_validas = [
         'carne', 'res', 'pollo', 'cerdo', 'pescado', 'mariscos', 'embutidos',
         'leche', 'queso', 'yogurt', 'lácteos', 'huevos',
         'fruta', 'vegetal', 'verdura', 'hortalizas', 'vegetales', 'frutas',
         'pan', 'panadería', 'cereales', 'arroz', 'pasta', 'granos',
         'bebida', 'agua', 'jugo', 'café', 'té', 'vino', 'cerveza', 'licores',
-        'limpieza', 'detergente', 'jabón', 'hogar', 'aseo',
-        'shampoo', 'cuidado personal', 'higiene', 'pañal',
+        'limpieza', 'detergente', 'jabón', 'hogar', 'aseo', 'lavandería',
+        'shampoo', 'cuidado personal', 'higiene', 'pañal', 'farmacia',
         'sal', 'azúcar', 'aceite', 'condimento', 'especias', 'salsa',
         'conserva', 'enlatado', 'mermelada', 'congelado', 'helado',
-        'mascota', 'gato', 'perro', 'despensa', 'abarrotes', 'snacks', 'dulces'
+        'mascota', 'gato', 'perro', 'despensa', 'abarrotes', 'snacks', 'dulces',
+        'electrónico', 'electrodoméstico', 'bazar', 'juguete', 'ropa', 'textil'
     ]
     
     # Verificar si contiene términos de supermercado
@@ -201,14 +204,26 @@ def es_categoria_valida(url, texto):
     return False
 
 def encontrar_categorias(soup, base_url):
-    """Encontrar categorías de productos válidas"""
+    """Encontrar categorías de productos válidas - Super Bravo"""
     categorias = set()
     
-    # Buscar enlaces en áreas de navegación
+    # Selectores específicos para Super Bravo
     selectores = [
-        '.nav a[href]', '.navigation a[href]', '.menu a[href]',
+        # Menú principal
+        '.main-menu a[href]', '.navbar a[href]', '.nav-menu a[href]',
+        # Navegación de categorías
+        '.category-menu a[href]', '.categories a[href]', '.cat-menu a[href]',
+        # Enlaces generales
         'nav a[href]', 'header a[href]', '.header a[href]',
-        'ul li a[href]', 'a[href]'
+        '.navigation a[href]', '.menu a[href]',
+        # Listas de categorías
+        'ul li a[href]', '.category-list a[href]',
+        # Dropdowns y submenús
+        '.dropdown-menu a[href]', '.submenu a[href]',
+        # Enlaces en el footer que puedan ser categorías
+        'footer a[href]',
+        # Cualquier enlace
+        'a[href]'
     ]
     
     for selector in selectores:
@@ -218,27 +233,38 @@ def encontrar_categorias(soup, base_url):
                 href = enlace.get('href', '').strip()
                 texto = enlace.get_text().strip()
                 
-                if href and href not in ['#', '/', 'javascript:void(0)']:
-                    url_completa = urljoin(base_url, href)
+                if href and href not in ['#', '/', 'javascript:void(0)', '']:
+                    # Construir URL completa
+                    if href.startswith('http'):
+                        url_completa = href
+                    else:
+                        url_completa = urljoin(base_url, href)
                     
-                    if es_categoria_valida(url_completa, texto):
+                    # Verificar que la URL pertenezca al dominio
+                    if 'superbravo.com.do' in url_completa and es_categoria_valida(url_completa, texto):
                         categorias.add((url_completa, texto))
                         print(f"✓ Categoría encontrada: {texto}")
-        except:
+        except Exception as e:
             continue
     
     return list(categorias)
 
 def extraer_productos_pagina(soup):
-    """Extraer productos de una página"""
+    """Extraer productos de una página - Super Bravo"""
     productos = []
     
-    # Selectores para encontrar productos
+    # Selectores específicos para Super Bravo (adaptables)
     selectores_productos = [
+        # Selectores comunes de productos
         '.product-item', '.product', '.item-product', '.producto',
+        '.product-card', '.product-box', '.item-box',
+        # Selectores de grids y listas
         'div[class*="product"]', 'li[class*="product"]',
-        '.grid-item', '.product-card', '.item', '.card',
-        'article', '.catalog-item'
+        '.grid-item', '.list-item', '.item', '.card',
+        # Selectores de artículos
+        'article', '.catalog-item', '.shop-item',
+        # Selectores genéricos
+        '.product-wrap', '.product-container', '.item-wrap'
     ]
     
     items_encontrados = []
@@ -247,6 +273,7 @@ def extraer_productos_pagina(soup):
             items = soup.select(selector)
             if len(items) > len(items_encontrados):
                 items_encontrados = items
+                print(f"Mejor selector encontrado: {selector} ({len(items)} items)")
         except:
             continue
     
@@ -268,10 +295,18 @@ def extraer_productos_pagina(soup):
     return productos
 
 def extraer_nombre_producto(item):
-    """Extraer nombre del producto"""
+    """Extraer nombre del producto - Super Bravo"""
     selectores_nombre = [
+        # Selectores específicos de nombres
         'a.product-item-link', '.product-name a', '.product-title',
-        'h1', 'h2', 'h3', 'h4', '.name', '.title', 'a[title]'
+        '.product-name', '.item-name', '.product-title',
+        # Títulos y encabezados
+        'h1', 'h2', 'h3', 'h4', 'h5',
+        '.name', '.title', '.product-info h3', '.product-info h4',
+        # Enlaces con título
+        'a[title]', 'a.product-link',
+        # Selectores alternativos
+        '.product-description', '.item-title'
     ]
     
     for selector in selectores_nombre:
@@ -279,13 +314,13 @@ def extraer_nombre_producto(item):
             elemento = item.select_one(selector)
             if elemento:
                 texto = elemento.get_text().strip()
-                if texto and len(texto) > 2 and len(texto) < 100:
+                if texto and len(texto) > 2 and len(texto) < 150:
                     return texto
                 
                 # Intentar atributos
-                for attr in ['title', 'alt', 'data-name']:
+                for attr in ['title', 'alt', 'data-name', 'data-title']:
                     valor = elemento.get(attr, '').strip()
-                    if valor and len(valor) > 2:
+                    if valor and len(valor) > 2 and len(valor) < 150:
                         return valor
         except:
             continue
@@ -293,9 +328,16 @@ def extraer_nombre_producto(item):
     return "Sin nombre"
 
 def extraer_precio_producto(item):
-    """Extraer precio del producto"""
+    """Extraer precio del producto - Super Bravo"""
     selectores_precio = [
-        '.price', '.precio', 'span[class*="price"]', '.cost', '.amount'
+        # Selectores específicos de precios
+        '.price', '.precio', '.cost', '.amount',
+        'span[class*="price"]', 'div[class*="price"]',
+        '.product-price', '.item-price', '.price-current',
+        '.price-now', '.sale-price', '.regular-price',
+        # Selectores con moneda dominicana
+        'span[class*="pesos"]', 'span[class*="rd"]',
+        '.currency', '.money'
     ]
     
     for selector in selectores_precio:
@@ -303,7 +345,8 @@ def extraer_precio_producto(item):
             elemento = item.select_one(selector)
             if elemento:
                 precio_texto = elemento.get_text().strip()
-                if precio_texto and ('$' in precio_texto or '₡' in precio_texto or 
+                # Buscar patrones de precio dominicano (RD$ o $)
+                if precio_texto and ('RD$' in precio_texto or '$' in precio_texto or 
                                    re.search(r'\d+[.,]\d+', precio_texto)):
                     return precio_texto
         except:
@@ -312,8 +355,9 @@ def extraer_precio_producto(item):
     # Buscar patrones de precio en todo el texto del item
     texto_completo = item.get_text()
     patrones_precio = [
-        r'\$\s*\d+[.,]?\d*', r'₡\s*\d+[.,]?\d*',
-        r'\d+[.,]\d+\s*[₡$]', r'\d{1,6}[.,]\d{2}'
+        r'RD\$\s*\d+[.,]?\d*', r'\$\s*\d+[.,]?\d*',
+        r'\d+[.,]\d+\s*RD\$', r'\d+[.,]\d+\s*\$',
+        r'\d{1,6}[.,]\d{2}', r'\d+\.\d{2}', r'\d+,\d{2}'
     ]
     
     for patron in patrones_precio:
@@ -324,7 +368,7 @@ def extraer_precio_producto(item):
     return "Sin precio"
 
 def procesar_categoria(url_categoria, nombre_categoria):
-    """Procesar todos los productos de una categoría"""
+    """Procesar todos los productos de una categoría - Super Bravo"""
     print(f"\n{'='*50}")
     print(f"PROCESANDO CATEGORÍA: {nombre_categoria}")
     print(f"URL: {url_categoria}")
@@ -357,10 +401,10 @@ def procesar_categoria(url_categoria, nombre_categoria):
     return productos_categoria
 
 def main():
-    base_url = 'https://supermercadosnacional.com/'
+    base_url = 'https://www.superbravo.com.do/'
     todos_productos = []
     
-    print("🚀 INICIANDO SCRAPING DE SUPERMERCADO NACIONAL")
+    print("🚀 INICIANDO SCRAPING DE SUPER BRAVO")
     print("=" * 60)
     
     # Obtener página principal
@@ -381,16 +425,23 @@ def main():
         print("❌ No se encontraron categorías válidas")
         return
     
-    print(f"\n✓ {len(categorias)} categorías encontradas:")
-    for i, (url, nombre) in enumerate(categorias, 1):
+    # Remover duplicados de categorías
+    categorias_unicas = list(set(categorias))
+    print(f"\n✓ {len(categorias_unicas)} categorías únicas encontradas:")
+    for i, (url, nombre) in enumerate(categorias_unicas[:20], 1):  # Mostrar solo las primeras 20
         print(f"  {i:2d}. {nombre}")
+    
+    if len(categorias_unicas) > 20:
+        print(f"  ... y {len(categorias_unicas) - 20} más")
     
     print(f"\nCOMENZANDO EXTRACCIÓN DE PRODUCTOS...")
     
-    # Procesar cada categoría
-    for i, (url_categoria, nombre_categoria) in enumerate(categorias, 1):
+    # Procesar cada categoría (limitar a las primeras 15 para prueba)
+    categorias_a_procesar = categorias_unicas[:15]
+    
+    for i, (url_categoria, nombre_categoria) in enumerate(categorias_a_procesar, 1):
         try:
-            print(f"\n[{i}/{len(categorias)}] Procesando: {nombre_categoria}")
+            print(f"\n[{i}/{len(categorias_a_procesar)}] Procesando: {nombre_categoria}")
             
             productos_categoria = procesar_categoria(url_categoria, nombre_categoria)
             
@@ -398,7 +449,7 @@ def main():
                 todos_productos.extend(productos_categoria)
                 print(f"✓ {len(productos_categoria)} productos agregados")
             
-            time.sleep(1)  # Pausa corta entre categorías
+            time.sleep(2)  # Pausa entre categorías
             
         except Exception as e:
             print(f"❌ Error procesando {nombre_categoria}: {e}")
@@ -414,13 +465,13 @@ def main():
             productos_finales.append({
                 'Nombre': producto['Nombre'],
                 'Precio': producto['Precio'],
-                'Categorias': '; '.join(producto['Categorias']),  # Múltiples categorías separadas por ;
+                'Categorias': '; '.join(producto['Categorias']),
                 'URL_Categoria': producto['URL_Categoria']
             })
         
         # Guardar resultados finales
         timestamp = int(time.time())
-        archivo_final = f'inventario_nacional_{timestamp}.csv'
+        archivo_final = f'inventario_superbravo_{timestamp}.csv'
         
         with open(archivo_final, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=['Nombre', 'Precio', 'Categorias', 'URL_Categoria'])
@@ -437,7 +488,7 @@ def main():
                 resumen[categoria] += 1
         
         print(f"\n📊 RESUMEN POR CATEGORÍA:")
-        for categoria, cantidad in sorted(resumen.items(), key=lambda x: x[1], reverse=True):
+        for categoria, cantidad in sorted(resumen.items(), key=lambda x: x[1], reverse=True)[:10]:
             print(f"   {categoria}: {cantidad} productos")
             
     else:
