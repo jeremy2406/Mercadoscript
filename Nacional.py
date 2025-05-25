@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import re
 from collections import defaultdict
+import hashlib
 
 def obtener_pagina(url, timeout=30, reintentos=3):
     """Obtener contenido de una página web"""
@@ -29,6 +30,130 @@ def obtener_pagina(url, timeout=30, reintentos=3):
     
     print(f"❌ Error después de {reintentos} intentos")
     return None
+
+def normalizar_texto(texto):
+    """Normalizar texto para comparación (quitar espacios, acentos, mayúsculas)"""
+    if not texto:
+        return ""
+    
+    # Convertir a minúsculas y quitar espacios extra
+    texto = re.sub(r'\s+', ' ', texto.lower().strip())
+    
+    # Quitar acentos básicos
+    replacements = {
+        'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
+        'ñ': 'n', 'ü': 'u'
+    }
+    for old, new in replacements.items():
+        texto = texto.replace(old, new)
+    
+    return texto
+
+def normalizar_precio(precio):
+    """Normalizar precio para comparación"""
+    if not precio or precio == "Sin precio":
+        return ""
+    
+    # Extraer solo números y puntos/comas
+    precio_limpio = re.sub(r'[^\d.,]', '', precio)
+    # Normalizar separadores decimales
+    precio_limpio = precio_limpio.replace(',', '.')
+    
+    return precio_limpio
+
+def generar_hash_producto(nombre, precio):
+    """Generar hash único basado en nombre y precio normalizados"""
+    nombre_norm = normalizar_texto(nombre)
+    precio_norm = normalizar_precio(precio)
+    
+    # Crear string único
+    texto_unico = f"{nombre_norm}|{precio_norm}"
+    
+    # Generar hash
+    return hashlib.md5(texto_unico.encode('utf-8')).hexdigest()
+
+def productos_son_similares(prod1, prod2, umbral_similitud=0.85):
+    """Verificar si dos productos son similares usando diferentes criterios"""
+    
+    # Criterio 1: Hash exacto
+    hash1 = generar_hash_producto(prod1['nombre'], prod1['precio'])
+    hash2 = generar_hash_producto(prod2['nombre'], prod2['precio'])
+    
+    if hash1 == hash2:
+        return True
+    
+    # Criterio 2: Nombres muy similares
+    nombre1_norm = normalizar_texto(prod1['nombre'])
+    nombre2_norm = normalizar_texto(prod2['nombre'])
+    
+    # Verificar si un nombre está contenido en el otro (para casos como "Leche Dos Pinos" vs "Leche Dos Pinos 1L")
+    if nombre1_norm in nombre2_norm or nombre2_norm in nombre1_norm:
+        # Si los nombres son similares, verificar precios
+        precio1_norm = normalizar_precio(prod1['precio'])
+        precio2_norm = normalizar_precio(prod2['precio'])
+        
+        if precio1_norm == precio2_norm:
+            return True
+    
+    # Criterio 3: Similitud de Jaccard para nombres
+    palabras1 = set(nombre1_norm.split())
+    palabras2 = set(nombre2_norm.split())
+    
+    if palabras1 and palabras2:
+        interseccion = len(palabras1.intersection(palabras2))
+        union = len(palabras1.union(palabras2))
+        similitud = interseccion / union if union > 0 else 0
+        
+        if similitud >= umbral_similitud:
+            precio1_norm = normalizar_precio(prod1['precio'])
+            precio2_norm = normalizar_precio(prod2['precio'])
+            
+            if precio1_norm == precio2_norm:
+                return True
+    
+    return False
+
+def eliminar_duplicados_avanzado(productos):
+    """Eliminar duplicados usando múltiples criterios"""
+    print(f"\n🔍 ELIMINANDO DUPLICADOS...")
+    print(f"Productos originales: {len(productos)}")
+    
+    productos_unicos = []
+    productos_procesados = set()  # Para tracking de hashes únicos
+    
+    for i, producto_actual in enumerate(productos):
+        
+        # Generar hash único
+        hash_actual = generar_hash_producto(producto_actual['Nombre'], producto_actual['Precio'])
+        
+        # Si ya procesamos este hash exacto, saltar
+        if hash_actual in productos_procesados:
+            continue
+        
+        # Verificar similitud con productos ya agregados
+        es_duplicado = False
+        for producto_unico in productos_unicos:
+            if productos_son_similares(
+                {'nombre': producto_actual['Nombre'], 'precio': producto_actual['Precio']},
+                {'nombre': producto_unico['Nombre'], 'precio': producto_unico['Precio']}
+            ):
+                es_duplicado = True
+                # Combinar categorías si es duplicado
+                if producto_actual['Categoria'] not in producto_unico['Categorias']:
+                    producto_unico['Categorias'].append(producto_actual['Categoria'])
+                break
+        
+        if not es_duplicado:
+            # Crear nuevo producto único con lista de categorías
+            producto_unico = producto_actual.copy()
+            producto_unico['Categorias'] = [producto_actual['Categoria']]
+            productos_unicos.append(producto_unico)
+            productos_procesados.add(hash_actual)
+    
+    print(f"Productos únicos: {len(productos_unicos)}")
+    print(f"Duplicados eliminados: {len(productos) - len(productos_unicos)}")
+    
+    return productos_unicos
 
 def es_categoria_valida(url, texto):
     """Determinar si es una categoría válida de supermercado"""
@@ -228,8 +353,6 @@ def procesar_categoria(url_categoria, nombre_categoria):
     
     print(f"✓ {len(productos_categoria)} productos extraídos de '{nombre_categoria}'")
     
-    # Solo procesar la primera página (sin paginación adicional)
-    
     print(f"✓ TOTAL EN '{nombre_categoria}': {len(productos_categoria)} productos")
     return productos_categoria
 
@@ -275,31 +398,43 @@ def main():
                 todos_productos.extend(productos_categoria)
                 print(f"✓ {len(productos_categoria)} productos agregados")
             
-            # No guardar archivos de progreso
-            
             time.sleep(1)  # Pausa corta entre categorías
             
         except Exception as e:
             print(f"❌ Error procesando {nombre_categoria}: {e}")
             continue
     
-    # Guardar resultados finales
+    # ELIMINAR DUPLICADOS
     if todos_productos:
+        productos_unicos = eliminar_duplicados_avanzado(todos_productos)
+        
+        # Preparar datos finales con categorías combinadas
+        productos_finales = []
+        for producto in productos_unicos:
+            productos_finales.append({
+                'Nombre': producto['Nombre'],
+                'Precio': producto['Precio'],
+                'Categorias': '; '.join(producto['Categorias']),  # Múltiples categorías separadas por ;
+                'URL_Categoria': producto['URL_Categoria']
+            })
+        
+        # Guardar resultados finales
         timestamp = int(time.time())
-        archivo_final = f'inventario_nacional_{timestamp}.csv'
+        archivo_final = f'inventario_nacional_sin_duplicados_{timestamp}.csv'
         
         with open(archivo_final, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['Nombre', 'Precio', 'Categoria', 'URL_Categoria'])
+            writer = csv.DictWriter(f, fieldnames=['Nombre', 'Precio', 'Categorias', 'URL_Categoria'])
             writer.writeheader()
-            writer.writerows(todos_productos)
+            writer.writerows(productos_finales)
         
         print(f'\n🎉 SCRAPING COMPLETADO')
-        print(f'✓ {len(todos_productos)} productos guardados en {archivo_final}')
+        print(f'✓ {len(productos_finales)} productos únicos guardados en {archivo_final}')
         
         # Resumen por categoría
         resumen = defaultdict(int)
-        for producto in todos_productos:
-            resumen[producto['Categoria']] += 1
+        for producto in productos_unicos:
+            for categoria in producto['Categorias']:
+                resumen[categoria] += 1
         
         print(f"\n📊 RESUMEN POR CATEGORÍA:")
         for categoria, cantidad in sorted(resumen.items(), key=lambda x: x[1], reverse=True):
