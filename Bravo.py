@@ -6,6 +6,11 @@ from urllib.parse import urljoin, urlparse
 import re
 from collections import defaultdict
 import hashlib
+import urllib3
+from urllib3.exceptions import InsecureRequestWarning
+
+# Deshabilitar warnings de SSL
+urllib3.disable_warnings(InsecureRequestWarning)
 
 def obtener_pagina(url, timeout=30, reintentos=3):
     """Obtener contenido de una página web"""
@@ -157,7 +162,7 @@ def eliminar_duplicados_avanzado(productos):
     return productos_unicos
 
 def es_categoria_valida(url, texto):
-    """Determinar si es una categoría válida de supermercado - Super Bravo"""
+    """Determinar si es una categoría válida de supermercado - Super Bravo (MEJORADO)"""
     texto_lower = texto.lower().strip()
     url_lower = url.lower()
     
@@ -167,9 +172,11 @@ def es_categoria_valida(url, texto):
         'mis ordenes', 'cerrar sesión', 'iniciar sesión', 'crear cuenta', 
         'nuestras tiendas', 'políticas', 'retiro en tienda', 'ayuda', 'contacto',
         'inicio', 'soporte', 'trabaja con nosotros', 'sucursales', 'home',
-        'ofertas', 'promociones', 'javascript:', '#', 'mailto:', 'tel:',
-        'login', 'register', 'cart', 'checkout', 'search', 'buscar',
-        'facebook', 'instagram', 'twitter', 'youtube', 'whatsapp'
+        'javascript:', '#', 'mailto:', 'tel:', 'login', 'register', 'cart', 
+        'checkout', 'search', 'buscar', 'facebook', 'instagram', 'twitter', 
+        'youtube', 'whatsapp', 'terminos', 'privacidad', 'cookies',
+        'nosotros', 'quienes somos', 'historia', 'mision', 'vision',
+        'empleo', 'bolsa de trabajo', 'rrhh', 'recursos humanos'
     ]
     
     # Verificar exclusiones
@@ -178,22 +185,65 @@ def es_categoria_valida(url, texto):
             return False
     
     # Debe tener texto válido
-    if len(texto.strip()) < 3 or len(texto.strip()) > 50:
+    if len(texto.strip()) < 2 or len(texto.strip()) > 80:
         return False
     
-    # Categorías válidas de supermercado República Dominicana
+    # Categorías válidas de supermercado República Dominicana (AMPLIADO)
     categorias_validas = [
+        # Carnes y proteínas
         'carne', 'res', 'pollo', 'cerdo', 'pescado', 'mariscos', 'embutidos',
-        'leche', 'queso', 'yogurt', 'lácteos', 'huevos',
+        'jamón', 'salami', 'chorizo', 'salchicha', 'pavo', 'cordero',
+        
+        # Lácteos
+        'leche', 'queso', 'yogurt', 'lácteos', 'huevos', 'mantequilla',
+        'crema', 'nata', 'requesón',
+        
+        # Frutas y vegetales
         'fruta', 'vegetal', 'verdura', 'hortalizas', 'vegetales', 'frutas',
+        'tomate', 'lechuga', 'cebolla', 'zanahoria', 'platano', 'mango',
+        'aguacate', 'naranja', 'limón', 'papa', 'yuca', 'ñame',
+        
+        # Panadería y cereales
         'pan', 'panadería', 'cereales', 'arroz', 'pasta', 'granos',
+        'avena', 'quinoa', 'trigo', 'maíz', 'habichuela', 'frijol',
+        'lentejas', 'garbanzo',
+        
+        # Bebidas
         'bebida', 'agua', 'jugo', 'café', 'té', 'vino', 'cerveza', 'licores',
+        'refresco', 'soda', 'energizante', 'isotónico', 'leche de coco',
+        
+        # Limpieza y hogar
         'limpieza', 'detergente', 'jabón', 'hogar', 'aseo', 'lavandería',
+        'suavizante', 'cloro', 'desinfectante', 'papel higiénico',
+        'servilleta', 'pañuelo', 'toalla', 'esponja',
+        
+        # Cuidado personal
         'shampoo', 'cuidado personal', 'higiene', 'pañal', 'farmacia',
+        'desodorante', 'perfume', 'colonia', 'crema', 'loción',
+        'pasta dental', 'cepillo', 'maquillaje', 'protector solar',
+        
+        # Condimentos y especias
         'sal', 'azúcar', 'aceite', 'condimento', 'especias', 'salsa',
+        'vinagre', 'mayonesa', 'ketchup', 'mostaza', 'ajo', 'cebollín',
+        'cilantro', 'perejil', 'orégano', 'comino',
+        
+        # Conservas y enlatados
         'conserva', 'enlatado', 'mermelada', 'congelado', 'helado',
-        'mascota', 'gato', 'perro', 'despensa', 'abarrotes', 'snacks', 'dulces',
-        'electrónico', 'electrodoméstico', 'bazar', 'juguete', 'ropa', 'textil'
+        'atún', 'sardina', 'frijoles', 'maíz', 'salsa de tomate',
+        
+        # Mascotas
+        'mascota', 'gato', 'perro', 'alimento', 'comida para mascota',
+        
+        # Despensa general
+        'despensa', 'abarrotes', 'snacks', 'dulces', 'chocolate',
+        'galleta', 'caramelo', 'chicle', 'nuez', 'almendra',
+        
+        # Electrónicos y bazar
+        'electrónico', 'electrodoméstico', 'bazar', 'juguete', 'ropa', 'textil',
+        'batería', 'cargador', 'cable', 'audífono',
+        
+        # Términos específicos de URLs
+        'categoria', 'category', 'departamento', 'seccion', 'productos'
     ]
     
     # Verificar si contiene términos de supermercado
@@ -201,34 +251,68 @@ def es_categoria_valida(url, texto):
         if termino in texto_lower:
             return True
     
+    # También verificar la URL por patrones específicos
+    patrones_url_valida = [
+        r'/categoria/', r'/category/', r'/dept/', r'/department/',
+        r'/seccion/', r'/productos/', r'/product-category/',
+        r'/c/', r'/cat/', r'/departamento/'
+    ]
+    
+    for patron in patrones_url_valida:
+        if re.search(patron, url_lower):
+            return True
+    
     return False
 
 def encontrar_categorias(soup, base_url):
-    """Encontrar categorías de productos válidas - Super Bravo"""
+    """Encontrar categorías de productos válidas - Super Bravo (MEJORADO)"""
     categorias = set()
     
-    # Selectores específicos para Super Bravo
+    print("🔍 Buscando categorías con selectores específicos...")
+    
+    # Selectores específicos para Super Bravo (más completos)
     selectores = [
-        # Menú principal
+        # Menús principales y navegación
         '.main-menu a[href]', '.navbar a[href]', '.nav-menu a[href]',
+        '.primary-navigation a[href]', '.main-navigation a[href]',
+        
         # Navegación de categorías
         '.category-menu a[href]', '.categories a[href]', '.cat-menu a[href]',
-        # Enlaces generales
+        '.product-categories a[href]', '.department-menu a[href]',
+        
+        # Enlaces en header y navigation
         'nav a[href]', 'header a[href]', '.header a[href]',
-        '.navigation a[href]', '.menu a[href]',
+        '.navigation a[href]', '.menu a[href]', '.nav a[href]',
+        
         # Listas de categorías
-        'ul li a[href]', '.category-list a[href]',
+        'ul li a[href]', '.category-list a[href]', '.dept-list a[href]',
+        
         # Dropdowns y submenús
-        '.dropdown-menu a[href]', '.submenu a[href]',
-        # Enlaces en el footer que puedan ser categorías
-        'footer a[href]',
-        # Cualquier enlace
+        '.dropdown-menu a[href]', '.submenu a[href]', '.sub-menu a[href]',
+        '.dropdown a[href]', '.menu-item a[href]',
+        
+        # Mega menús
+        '.mega-menu a[href]', '.megamenu a[href]', '.mega-dropdown a[href]',
+        
+        # Sidebar y categorías laterales
+        '.sidebar a[href]', '.sidebar-menu a[href]', '.left-menu a[href]',
+        '.category-sidebar a[href]', '.filter-menu a[href]',
+        
+        # Enlaces específicos de productos/categorías
+        'a[href*="categoria"]', 'a[href*="category"]', 'a[href*="dept"]',
+        'a[href*="department"]', 'a[href*="productos"]', 'a[href*="seccion"]',
+        
+        # Cualquier enlace (como último recurso)
         'a[href]'
     ]
+    
+    categorias_encontradas_por_selector = {}
     
     for selector in selectores:
         try:
             enlaces = soup.select(selector)
+            categorias_selector = set()
+            
             for enlace in enlaces:
                 href = enlace.get('href', '').strip()
                 texto = enlace.get_text().strip()
@@ -242,12 +326,62 @@ def encontrar_categorias(soup, base_url):
                     
                     # Verificar que la URL pertenezca al dominio
                     if 'superbravo.com.do' in url_completa and es_categoria_valida(url_completa, texto):
-                        categorias.add((url_completa, texto))
-                        print(f"✓ Categoría encontrada: {texto}")
+                        categoria_tuple = (url_completa, texto)
+                        categorias.add(categoria_tuple)
+                        categorias_selector.add(categoria_tuple)
+            
+            if categorias_selector:
+                categorias_encontradas_por_selector[selector] = len(categorias_selector)
+                print(f"  {selector}: {len(categorias_selector)} categorías")
+                
         except Exception as e:
             continue
     
+    print(f"\n📊 Resumen de categorías encontradas:")
+    for selector, cantidad in sorted(categorias_encontradas_por_selector.items(), 
+                                   key=lambda x: x[1], reverse=True)[:5]:
+        print(f"  {selector}: {cantidad} categorías")
+    
     return list(categorias)
+
+def buscar_categorias_adicionales(soup, base_url):
+    """Buscar categorías adicionales en elementos específicos del sitio"""
+    categorias_adicionales = set()
+    
+    print("🔍 Buscando categorías adicionales...")
+    
+    # Buscar en scripts JSON-LD o datos estructurados
+    scripts = soup.find_all('script', type='application/ld+json')
+    for script in scripts:
+        try:
+            import json
+            data = json.loads(script.string)
+            # Buscar categorías en datos estructurados
+            if isinstance(data, dict) and 'category' in str(data).lower():
+                print("  Encontrados datos estructurados con categorías")
+        except:
+            pass
+    
+    # Buscar en breadcrumbs
+    breadcrumbs = soup.select('.breadcrumb a, .breadcrumbs a, .navigation-path a')
+    for crumb in breadcrumbs:
+        href = crumb.get('href', '').strip()
+        texto = crumb.get_text().strip()
+        if href and es_categoria_valida(href, texto):
+            url_completa = urljoin(base_url, href)
+            if 'superbravo.com.do' in url_completa:
+                categorias_adicionales.add((url_completa, texto))
+    
+    # Buscar en mapas del sitio o sitemaps
+    sitemap_links = soup.select('a[href*="sitemap"], a[href*="mapa"]')
+    for link in sitemap_links[:2]:  # Limitar a 2 para no sobrecargar
+        href = link.get('href')
+        if href:
+            sitemap_url = urljoin(base_url, href)
+            print(f"  Revisando sitemap: {sitemap_url}")
+            # Aquí podrías implementar lógica para procesar sitemaps
+    
+    return list(categorias_adicionales)
 
 def extraer_productos_pagina(soup):
     """Extraer productos de una página - Super Bravo"""
@@ -404,7 +538,7 @@ def main():
     base_url = 'https://www.superbravo.com.do/'
     todos_productos = []
     
-    print("🚀 INICIANDO SCRAPING DE SUPER BRAVO")
+    print("🚀 INICIANDO SCRAPING DE SUPER BRAVO (VERSIÓN MEJORADA)")
     print("=" * 60)
     
     # Obtener página principal
@@ -417,9 +551,13 @@ def main():
     
     soup_principal = BeautifulSoup(html_principal, 'html.parser')
     
-    # Encontrar categorías
+    # Encontrar categorías principales
     print("\nBuscando categorías de productos...")
     categorias = encontrar_categorias(soup_principal, base_url)
+    
+    # Buscar categorías adicionales
+    categorias_adicionales = buscar_categorias_adicionales(soup_principal, base_url)
+    categorias.extend(categorias_adicionales)
     
     if not categorias:
         print("❌ No se encontraron categorías válidas")
@@ -428,16 +566,16 @@ def main():
     # Remover duplicados de categorías
     categorias_unicas = list(set(categorias))
     print(f"\n✓ {len(categorias_unicas)} categorías únicas encontradas:")
-    for i, (url, nombre) in enumerate(categorias_unicas[:20], 1):  # Mostrar solo las primeras 20
-        print(f"  {i:2d}. {nombre}")
+    for i, (url, nombre) in enumerate(categorias_unicas[:25], 1):  # Mostrar las primeras 25
+        print(f"  {i:2d}. {nombre} -> {url}")
     
-    if len(categorias_unicas) > 20:
-        print(f"  ... y {len(categorias_unicas) - 20} más")
+    if len(categorias_unicas) > 25:
+        print(f"  ... y {len(categorias_unicas) - 25} más")
     
     print(f"\nCOMENZANDO EXTRACCIÓN DE PRODUCTOS...")
     
-    # Procesar cada categoría (limitar a las primeras 15 para prueba)
-    categorias_a_procesar = categorias_unicas[:15]
+    # Procesar cada categoría (limitar a las primeras 20 para prueba)
+    categorias_a_procesar = categorias_unicas[:20]
     
     for i, (url_categoria, nombre_categoria) in enumerate(categorias_a_procesar, 1):
         try:
@@ -488,7 +626,7 @@ def main():
                 resumen[categoria] += 1
         
         print(f"\n📊 RESUMEN POR CATEGORÍA:")
-        for categoria, cantidad in sorted(resumen.items(), key=lambda x: x[1], reverse=True)[:10]:
+        for categoria, cantidad in sorted(resumen.items(), key=lambda x: x[1], reverse=True)[:15]:
             print(f"   {categoria}: {cantidad} productos")
             
     else:
