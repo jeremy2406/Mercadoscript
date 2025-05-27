@@ -1,625 +1,508 @@
 import requests
+from bs4 import BeautifulSoup
 import csv
 import time
-import json
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse, parse_qs
+import logging
 import re
-from collections import defaultdict
-import hashlib
+from urllib.parse import urljoin, urlparse
+import sys
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-def obtener_pagina(url, timeout=30, reintentos=3):
-    """Obtener contenido de una página web"""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none'
-    }
+# Configurar logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class SirenaScraper:
+    def __init__(self):
+        self.base_url = "https://www.sirena.do/"
+        self.session = self.create_session()
+        self.products_data = []
+        
+    def create_session(self):
+        """Crear sesión con reintentos y headers apropiados"""
+        session = requests.Session()
+        
+        # Configurar reintentos
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        # Headers para parecer un navegador real
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'es-DO,es;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        })
+        
+        return session
     
-    for intento in range(reintentos):
+    def get_page(self, url):
+        """Obtener contenido de una página con manejo de errores"""
         try:
-            print(f"Obteniendo: {url[:60]}...")
-            response = requests.get(url, headers=headers, timeout=timeout)
+            logger.info(f"Obteniendo página: {url}")
+            response = self.session.get(url, timeout=10)
             response.raise_for_status()
-            print(f"✓ Página obtenida ({response.status_code})")
-            return response.text
-        except Exception as e:
-            print(f"Error intento {intento + 1}: {e}")
-            if intento < reintentos - 1:
-                time.sleep(5)
+            return BeautifulSoup(response.content, 'html.parser')
+        except requests.RequestException as e:
+            logger.error(f"Error al obtener {url}: {e}")
+            return None
     
-    print(f"❌ Error después de {reintentos} intentos")
-    return None
-
-def normalizar_texto(texto):
-    """Normalizar texto para comparación"""
-    if not texto:
-        return ""
-    
-    texto = re.sub(r'\s+', ' ', texto.lower().strip())
-    
-    replacements = {
-        'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
-        'ñ': 'n', 'ü': 'u'
-    }
-    for old, new in replacements.items():
-        texto = texto.replace(old, new)
-    
-    return texto
-
-def normalizar_precio(precio):
-    """Normalizar precio para comparación"""
-    if not precio or precio == "Sin precio":
-        return ""
-    
-    precio_limpio = re.sub(r'[^\d.,]', '', precio)
-    precio_limpio = precio_limpio.replace(',', '.')
-    
-    return precio_limpio
-
-def generar_hash_producto(nombre, precio):
-    """Generar hash único basado en nombre y precio normalizados"""
-    nombre_norm = normalizar_texto(nombre)
-    precio_norm = normalizar_precio(precio)
-    
-    texto_unico = f"{nombre_norm}|{precio_norm}"
-    
-    return hashlib.md5(texto_unico.encode('utf-8')).hexdigest()
-
-def productos_son_similares(prod1, prod2, umbral_similitud=0.85):
-    """Verificar si dos productos son similares"""
-    
-    hash1 = generar_hash_producto(prod1['nombre'], prod1['precio'])
-    hash2 = generar_hash_producto(prod2['nombre'], prod2['precio'])
-    
-    if hash1 == hash2:
-        return True
-    
-    nombre1_norm = normalizar_texto(prod1['nombre'])
-    nombre2_norm = normalizar_texto(prod2['nombre'])
-    
-    if nombre1_norm in nombre2_norm or nombre2_norm in nombre1_norm:
-        precio1_norm = normalizar_precio(prod1['precio'])
-        precio2_norm = normalizar_precio(prod2['precio'])
+    def extract_categories(self, soup):
+        """Extraer categorías y subcategorías del menú principal"""
+        categories = []
         
-        if precio1_norm == precio2_norm:
-            return True
-    
-    palabras1 = set(nombre1_norm.split())
-    palabras2 = set(nombre2_norm.split())
-    
-    if palabras1 and palabras2:
-        interseccion = len(palabras1.intersection(palabras2))
-        union = len(palabras1.union(palabras2))
-        similitud = interseccion / union if union > 0 else 0
+        # Debug: imprimir estructura HTML para análisis
+        logger.info("Analizando estructura HTML...")
         
-        if similitud >= umbral_similitud:
-            precio1_norm = normalizar_precio(prod1['precio'])
-            precio2_norm = normalizar_precio(prod2['precio'])
-            
-            if precio1_norm == precio2_norm:
-                return True
-    
-    return False
-
-def eliminar_duplicados_avanzado(productos):
-    """Eliminar duplicados usando múltiples criterios"""
-    print(f"\n🔍 ELIMINANDO DUPLICADOS...")
-    print(f"Productos originales: {len(productos)}")
-    
-    productos_unicos = []
-    productos_procesados = set()
-    
-    for i, producto_actual in enumerate(productos):
+        # Selectores específicos para Sirena.do
+        sirena_selectors = [
+            # Selectores comunes para sitios de e-commerce dominicanos
+            '.category-link',
+            '.categoria',
+            '.menu-categoria',
+            '.departamento',
+            '.section-link',
+            # Selectores Bootstrap comunes
+            '.navbar-nav a',
+            '.nav-link',
+            '.dropdown-item',
+            # Selectores de menú lateral
+            '.sidebar-menu a',
+            '.side-menu a',
+            '.menu-item a',
+            # Selectores de navegación
+            'nav a[href*="categoria"]',
+            'nav a[href*="category"]',
+            'nav a[href*="departamento"]',
+            'a[href*="/c/"]',
+            'a[href*="/cat/"]',
+            'a[href*="/categoria/"]',
+            # Mega menú
+            '.mega-menu a',
+            '.dropdown-menu a',
+        ]
         
-        hash_actual = generar_hash_producto(producto_actual['Nombre'], producto_actual['Precio'])
+        menu_items = []
         
-        if hash_actual in productos_procesados:
-            continue
-        
-        es_duplicado = False
-        for producto_unico in productos_unicos:
-            if productos_son_similares(
-                {'nombre': producto_actual['Nombre'], 'precio': producto_actual['Precio']},
-                {'nombre': producto_unico['Nombre'], 'precio': producto_unico['Precio']}
-            ):
-                es_duplicado = True
-                if producto_actual['Categoria'] not in producto_unico['Categorias']:
-                    producto_unico['Categorias'].append(producto_actual['Categoria'])
+        # Intentar cada selector específico
+        for selector in sirena_selectors:
+            menu_items = soup.select(selector)
+            if menu_items and len(menu_items) > 3:  # Al menos 3 categorías
+                logger.info(f"Encontrado menú con selector: {selector} ({len(menu_items)} items)")
                 break
         
-        if not es_duplicado:
-            producto_unico = producto_actual.copy()
-            producto_unico['Categorias'] = [producto_actual['Categoria']]
-            productos_unicos.append(producto_unico)
-            productos_procesados.add(hash_actual)
-    
-    print(f"Productos únicos: {len(productos_unicos)}")
-    print(f"Duplicados eliminados: {len(productos) - len(productos_unicos)}")
-    
-    return productos_unicos
-
-def es_categoria_valida(url, texto):
-    """Determinar si es una categoría válida de supermercado para Sirena"""
-    texto_lower = texto.lower().strip()
-    url_lower = url.lower()
-    
-    # Excluir elementos de navegación y páginas no deseadas específicos de Sirena
-    excluir = [
-        'mi cuenta', 'mi carrito', 'mi lista', 'mis ordenes', 'cerrar sesión', 
-        'iniciar sesión', 'registrarse', 'crear cuenta', 'tiendas', 'sucursales',
-        'políticas', 'términos', 'ayuda', 'contacto', 'inicio', 'home', 'soporte',
-        'nosotros', 'nuestra historia', 'trabaja con nosotros', 'ofertas especiales',
-        'javascript:', '#', 'mailto:', 'tel:', 'whatsapp', 'facebook', 'instagram',
-        'twitter', 'newsletter', 'suscribirse', 'promociones', 'cupones',
-        'farmacia', 'servicio al cliente', 'devoluciones', 'garantías'
-    ]
-    
-    for termino in excluir:
-        if termino in texto_lower or termino in url_lower:
-            return False
-    
-    if len(texto.strip()) < 3 or len(texto.strip()) > 60:
-        return False
-    
-    # Categorías válidas específicas de supermercados dominicanos
-    categorias_validas = [
-        'carnes', 'pollo', 'res', 'cerdo', 'pescado', 'mariscos', 'embutidos',
-        'lácteos', 'leche', 'queso', 'yogurt', 'huevos', 'mantequilla',
-        'frutas', 'vegetales', 'verduras', 'hortalizas', 'productos frescos',
-        'panadería', 'pan', 'cereales', 'arroz', 'pasta', 'granos', 'harinas',
-        'bebidas', 'agua', 'jugos', 'refrescos', 'sodas', 'café', 'té',
-        'cerveza', 'vinos', 'licores', 'bebidas alcohólicas',
-        'limpieza', 'detergentes', 'jabones', 'desinfectantes', 'hogar',
-        'cuidado personal', 'shampoo', 'higiene', 'cosméticos', 'perfumes',
-        'pañales', 'bebés', 'infantil', 'medicamentos', 'vitaminas',
-        'condimentos', 'especias', 'salsas', 'aceites', 'vinagres',
-        'conservas', 'enlatados', 'mermeladas', 'dulces', 'galletas',
-        'congelados', 'helados', 'comida congelada',
-        'mascotas', 'perros', 'gatos', 'alimento para mascotas',
-        'despensa', 'abarrotes', 'snacks', 'botanas', 'dulcería'
-    ]
-    
-    for termino in categorias_validas:
-        if termino in texto_lower:
-            return True
-    
-    return False
-
-def encontrar_categorias_sirena(soup, base_url):
-    """Encontrar categorías específicas de Sirena"""
-    categorias = set()
-    
-    # Selectores específicos para la estructura de Sirena
-    selectores = [
-        # Menú principal de navegación
-        '.main-navigation a[href]',
-        '.navigation-menu a[href]',
-        '.category-menu a[href]',
-        '.menu-categories a[href]',
-        # Enlaces de categorías en el menú
-        'nav ul li a[href]',
-        '.nav-item a[href]',
-        '.category-item a[href]',
-        # Enlaces en sidebar o footer de categorías
-        '.sidebar-categories a[href]',
-        '.footer-categories a[href]',
-        # Cualquier enlace que contenga 'category' o 'categoria'
-        'a[href*="category"]',
-        'a[href*="categoria"]',
-        'a[href*="departamento"]',
-        'a[href*="seccion"]',
-        # Enlaces generales que podrían ser categorías
-        'a[href]'
-    ]
-    
-    print("Buscando categorías en diferentes secciones...")
-    
-    for selector in selectores:
-        try:
-            enlaces = soup.select(selector)
-            print(f"Encontrados {len(enlaces)} enlaces con selector: {selector}")
+        if not menu_items:
+            # Análisis más profundo de la estructura
+            logger.info("Analizando todos los enlaces para encontrar patrones...")
+            all_links = soup.find_all('a', href=True)
             
-            for enlace in enlaces:
-                href = enlace.get('href', '').strip()
-                texto = enlace.get_text().strip()
+            # Filtrar enlaces que podrían ser categorías
+            potential_categories = []
+            for link in all_links:
+                href = link.get('href', '').lower()
+                text = link.get_text(strip=True)
                 
-                if href and href not in ['#', '/', 'javascript:void(0)', '']:
-                    url_completa = urljoin(base_url, href)
-                    
-                    # Filtrar URLs que claramente son de categorías de productos
-                    if any(keyword in href.lower() for keyword in ['category', 'categoria', 'departamento', 'seccion', 'products']):
-                        if es_categoria_valida(url_completa, texto):
-                            categorias.add((url_completa, texto))
-                            print(f"✓ Categoría encontrada: {texto} -> {href}")
-                    elif es_categoria_valida(url_completa, texto):
-                        categorias.add((url_completa, texto))
-                        print(f"✓ Categoría encontrada: {texto} -> {href}")
-        except Exception as e:
-            print(f"Error con selector {selector}: {e}")
-            continue
-    
-    return list(categorias)
-
-def extraer_productos_sirena(soup, url_pagina):
-    """Extraer productos específicamente de la estructura de Sirena"""
-    productos = []
-    
-    # Selectores específicos para productos en Sirena
-    selectores_productos = [
-        # Selectores comunes para productos
-        '.product-item',
-        '.product-card',
-        '.product',
-        '.item-product',
-        'div[class*="product"]',
-        'article[class*="product"]',
-        '.grid-item',
-        '.catalog-item',
-        '.product-tile',
-        # Selectores específicos que podrían usar en Sirena
-        '.product-wrapper',
-        '.product-container',
-        '.item-wrapper',
-        '.product-box',
-        # Selectores más generales
-        '.item',
-        '.card',
-        'article',
-        'li[class*="item"]'
-    ]
-    
-    items_encontrados = []
-    mejor_selector = ""
-    
-    for selector in selectores_productos:
-        try:
-            items = soup.select(selector)
-            if len(items) > len(items_encontrados):
-                items_encontrados = items
-                mejor_selector = selector
-        except:
-            continue
-    
-    print(f"Mejor selector encontrado: {mejor_selector} con {len(items_encontrados)} elementos")
-    
-    # Si no encontramos productos con selectores específicos, buscar por patrones de texto
-    if len(items_encontrados) < 5:
-        print("Pocos productos encontrados, buscando por patrones alternativos...")
-        # Buscar divs que contengan precios
-        items_con_precio = soup.find_all('div', string=re.compile(r'\$|RD\$|\d+\.\d+'))
-        items_encontrados.extend(items_con_precio)
-    
-    print(f"Procesando {len(items_encontrados)} elementos de productos...")
-    
-    for i, item in enumerate(items_encontrados):
-        try:
-            nombre = extraer_nombre_producto_sirena(item)
-            precio = extraer_precio_producto_sirena(item)
+                # Patrones comunes en URLs de categorías
+                category_patterns = [
+                    '/categoria/', '/category/', '/cat/', '/c/',
+                    '/departamento/', '/seccion/', '/productos/',
+                    '/tienda/', '/shop/'
+                ]
+                
+                if (text and len(text) > 2 and len(text) < 50 and
+                    any(pattern in href for pattern in category_patterns)):
+                    potential_categories.append(link)
             
-            if nombre and len(nombre.strip()) > 2:
-                productos.append({
-                    'nombre': nombre,
-                    'precio': precio,
-                    'elemento_html': str(item)[:200] + "..." if len(str(item)) > 200 else str(item)
-                })
-                
-                if i < 5:  # Mostrar los primeros 5 para debug
-                    print(f"  Producto {i+1}: {nombre} - {precio}")
-        except Exception as e:
-            print(f"Error procesando elemento {i}: {e}")
-            continue
-    
-    return productos
-
-def extraer_nombre_producto_sirena(item):
-    """Extraer nombre del producto específicamente para Sirena"""
-    selectores_nombre = [
-        # Selectores específicos para nombres de productos
-        '.product-name',
-        '.product-title',
-        '.item-name',
-        '.item-title',
-        '.name',
-        '.title',
-        # Enlaces de producto
-        'a.product-link',
-        'a[title]',
-        '.product-item-link',
-        # Encabezados
-        'h1', 'h2', 'h3', 'h4', 'h5',
-        # Spans con nombres
-        'span.name',
-        'span.title',
-        # Selectores por atributos
-        '[data-name]',
-        '[data-title]'
-    ]
-    
-    for selector in selectores_nombre:
-        try:
-            elemento = item.select_one(selector)
-            if elemento:
-                texto = elemento.get_text().strip()
-                if texto and len(texto) > 2 and len(texto) < 150:
-                    # Limpiar texto común de nombres de productos
-                    texto = re.sub(r'\s+', ' ', texto)
-                    return texto
-                
-                # Intentar atributos
-                for attr in ['title', 'alt', 'data-name', 'data-title']:
-                    valor = elemento.get(attr, '').strip()
-                    if valor and len(valor) > 2 and len(valor) < 150:
-                        return valor
-        except:
-            continue
-    
-    # Si no encontramos nombre específico, buscar el texto más largo que no sea precio
-    texto_completo = item.get_text().strip()
-    lineas = [linea.strip() for linea in texto_completo.split('\n') if linea.strip()]
-    
-    for linea in lineas:
-        # Evitar líneas que claramente son precios
-        if not re.search(r'[\$₡]|\d+[.,]\d+', linea) and len(linea) > 5 and len(linea) < 150:
-            return linea
-    
-    return "Sin nombre"
-
-def extraer_precio_producto_sirena(item):
-    """Extraer precio del producto específicamente para Sirena"""
-    selectores_precio = [
-        # Selectores específicos para precios
-        '.price',
-        '.precio',
-        '.cost',
-        '.amount',
-        '.product-price',
-        '.item-price',
-        'span[class*="price"]',
-        'div[class*="price"]',
-        '.money',
-        '.currency',
-        # Selectores por atributos
-        '[data-price]',
-        '[data-cost]'
-    ]
-    
-    for selector in selectores_precio:
-        try:
-            elemento = item.select_one(selector)
-            if elemento:
-                precio_texto = elemento.get_text().strip()
-                if precio_texto and es_precio_valido(precio_texto):
-                    return limpiar_precio(precio_texto)
-        except:
-            continue
-    
-    # Buscar patrones de precio en todo el texto del item
-    texto_completo = item.get_text()
-    patrones_precio = [
-        r'RD\$\s*[\d,]+\.?\d*',  # Pesos dominicanos
-        r'\$\s*[\d,]+\.?\d*',    # Dólares
-        r'[\d,]+\.?\d*\s*RD\$',  # Pesos al final
-        r'[\d,]+\.\d{2}',        # Formato decimal
-        r'[\d,]{1,6}\.\d{2}'     # Formato con comas
-    ]
-    
-    for patron in patrones_precio:
-        match = re.search(patron, texto_completo)
-        if match:
-            precio_encontrado = match.group().strip()
-            if es_precio_valido(precio_encontrado):
-                return limpiar_precio(precio_encontrado)
-    
-    return "Sin precio"
-
-def es_precio_valido(precio_texto):
-    """Verificar si un texto representa un precio válido"""
-    if not precio_texto:
-        return False
-    
-    # Debe contener números
-    if not re.search(r'\d', precio_texto):
-        return False
-    
-    # No debe ser solo números (podría ser código de producto)
-    if precio_texto.isdigit() and len(precio_texto) > 6:
-        return False
-    
-    # Debe tener formato de precio común
-    patrones_validos = [
-        r'[\$₡]', r'RD\$', r'\d+[.,]\d+', r'precio', r'cost'
-    ]
-    
-    return any(re.search(patron, precio_texto, re.IGNORECASE) for patron in patrones_validos)
-
-def limpiar_precio(precio_texto):
-    """Limpiar y normalizar texto de precio"""
-    # Conservar formato original pero limpio
-    precio_limpio = re.sub(r'\s+', ' ', precio_texto.strip())
-    return precio_limpio
-
-def procesar_categoria_sirena(url_categoria, nombre_categoria, max_paginas=3):
-    """Procesar todos los productos de una categoría de Sirena"""
-    print(f"\n{'='*50}")
-    print(f"PROCESANDO CATEGORÍA: {nombre_categoria}")
-    print(f"URL: {url_categoria}")
-    print(f"{'='*50}")
-    
-    productos_categoria = []
-    
-    for pagina in range(1, max_paginas + 1):
-        print(f"\n--- Página {pagina} ---")
-        
-        # Construir URL de página (diferentes formatos posibles)
-        url_pagina = url_categoria
-        if pagina > 1:
-            if '?' in url_categoria:
-                url_pagina = f"{url_categoria}&page={pagina}"
+            if potential_categories:
+                menu_items = potential_categories
+                logger.info(f"Encontradas {len(menu_items)} categorías potenciales por análisis de patrones")
             else:
-                url_pagina = f"{url_categoria}?page={pagina}"
+                # Último recurso: buscar elementos del DOM que contengan listas de categorías
+                logger.info("Buscando estructuras de navegación...")
+                nav_elements = soup.find_all(['nav', 'ul', 'div'], 
+                                           class_=lambda x: x and any(term in x.lower() for term in 
+                                           ['menu', 'nav', 'categoria', 'category', 'sidebar']))
+                
+                for nav in nav_elements:
+                    links = nav.find_all('a', href=True)
+                    if len(links) > 2:  # Al menos 2 enlaces
+                        menu_items.extend(links)
+                        logger.info(f"Encontrados {len(links)} enlaces en elemento de navegación")
+                
+                if not menu_items:
+                    logger.warning("No se encontraron categorías. Mostrando estructura HTML para debug...")
+                    # Mostrar los primeros elementos para debug
+                    nav_tags = soup.find_all(['nav', 'header'])[:3]
+                    for i, tag in enumerate(nav_tags):
+                        logger.info(f"Estructura {i+1}: {tag.name} - clases: {tag.get('class', [])}")
+                        links = tag.find_all('a')[:5]
+                        for link in links:
+                            logger.info(f"  - Link: {link.get_text(strip=True)[:30]} -> {link.get('href', '')[:50]}")
         
-        html = obtener_pagina(url_pagina)
-        if not html:
-            print(f"❌ No se pudo obtener la página {pagina}")
-            break
+        # Procesar enlaces encontrados
+        for item in menu_items:
+            href = item.get('href', '')
+            text = item.get_text(strip=True)
+            
+            # Filtros más específicos para Sirena.do
+            if (href and text and 
+                len(text) > 1 and len(text) < 100 and
+                not href.startswith('#') and 
+                not href.startswith('javascript:') and
+                not href.startswith('mailto:') and
+                not href.startswith('tel:') and
+                'contacto' not in text.lower() and
+                'login' not in text.lower() and
+                'carrito' not in text.lower() and
+                'cuenta' not in text.lower() and
+                'ayuda' not in text.lower()):
+                
+                full_url = urljoin(self.base_url, href)
+                
+                # Evitar URLs de la misma página
+                if full_url != self.base_url.rstrip('/'):
+                    categories.append({
+                        'name': text,
+                        'url': full_url
+                    })
         
-        soup = BeautifulSoup(html, 'html.parser')
+        # Eliminar duplicados y filtrar mejor
+        seen_urls = set()
+        unique_categories = []
         
-        # Extraer productos de esta página
-        productos = extraer_productos_sirena(soup, url_pagina)
+        for cat in categories:
+            url_key = cat['url'].lower().rstrip('/')
+            if (url_key not in seen_urls and 
+                len(cat['name']) > 2 and
+                not any(skip in cat['name'].lower() for skip in 
+                       ['facebook', 'twitter', 'instagram', 'whatsapp', 'youtube',
+                        'términos', 'privacidad', 'políticas', 'sobre nosotros'])):
+                seen_urls.add(url_key)
+                unique_categories.append(cat)
         
-        if not productos:
-            print(f"No se encontraron productos en la página {pagina}")
-            if pagina == 1:
-                print("Guardando HTML de muestra para análisis...")
-                with open(f'debug_sirena_{nombre_categoria.replace(" ", "_")}.html', 'w', encoding='utf-8') as f:
-                    f.write(html)
-            break
+        # Limitar a las primeras 20 categorías para evitar ruido
+        unique_categories = unique_categories[:20]
         
-        productos_pagina = 0
-        for producto in productos:
-            productos_categoria.append({
-                'Nombre': producto['nombre'],
-                'Precio': producto['precio'],
-                'Categoria': nombre_categoria,
-                'URL_Categoria': url_categoria,
-                'Pagina': pagina
-            })
-            productos_pagina += 1
+        logger.info(f"Encontradas {len(unique_categories)} categorías únicas")
         
-        print(f"✓ {productos_pagina} productos extraídos de la página {pagina}")
+        # Mostrar las categorías encontradas para debug
+        for cat in unique_categories[:10]:  # Mostrar primeras 10
+            logger.info(f"Categoría: {cat['name']} -> {cat['url']}")
         
-        # Si encontramos pocos productos, probablemente no hay más páginas
-        if len(productos) < 10:
-            print("Pocos productos encontrados, asumiendo última página")
-            break
-        
-        time.sleep(2)  # Pausa entre páginas
+        return unique_categories
     
-    print(f"✓ TOTAL EN '{nombre_categoria}': {len(productos_categoria)} productos")
-    return productos_categoria
+    def extract_products_from_page(self, soup, category_name):
+        """Extraer productos de una página de categoría"""
+        products = []
+        
+        # Selectores específicos para sitios de e-commerce dominicanos y Sirena.do
+        product_selectors = [
+            # Selectores comunes de productos
+            '.product-item',
+            '.product',
+            '.item-product',
+            '.product-card',
+            '.producto',
+            '.articulo',
+            '[data-product]',
+            '.grid-item',
+            '.product-box',
+            '.item-box',
+            # Selectores de tarjetas de producto
+            '.card.product',
+            '.product-tile',
+            '.product-thumb',
+            '.item',
+            # Selectores para sitios Bootstrap
+            '.col .product',
+            '.col-md-3',
+            '.col-md-4',
+            '.col-sm-6',
+            # Selectores específicos de grids
+            '.products-grid .item',
+            '.catalog-item',
+            '.shop-item',
+        ]
+        
+        product_elements = []
+        
+        # Intentar selectores específicos primero
+        for selector in product_selectors:
+            product_elements = soup.select(selector)
+            if product_elements and len(product_elements) > 2:
+                logger.info(f"Productos encontrados con selector: {selector} ({len(product_elements)} items)")
+                break
+        
+        if not product_elements:
+            logger.info("Buscando productos con análisis más profundo...")
+            
+            # Buscar divs que contengan imágenes y precios (patrón común de productos)
+            potential_products = []
+            
+            # Buscar contenedores que tengan imagen + precio
+            containers = soup.find_all('div')
+            for container in containers:
+                has_image = container.find('img')
+                has_price = container.find(text=lambda text: text and any(symbol in str(text) for symbol in 
+                                          ['$', 'RD', 'pesos', 'DOP']))
+                
+                if has_image and has_price:
+                    potential_products.append(container)
+            
+            if potential_products:
+                product_elements = potential_products[:30]  # Limitar para evitar ruido
+                logger.info(f"Encontrados {len(product_elements)} productos potenciales por análisis de imagen+precio")
+            
+            # Si aún no encuentra, buscar patrones de clase CSS
+            if not product_elements:
+                product_divs = soup.find_all('div', class_=lambda x: x and 
+                    any(term in ' '.join(x).lower() for term in ['product', 'item', 'card', 'box', 'tile']))
+                
+                # Filtrar los que realmente parecen productos
+                for div in product_divs:
+                    if (div.find('img') and 
+                        (div.find(text=lambda t: t and '$' in str(t)) or 
+                         div.find(class_=lambda x: x and 'price' in str(x).lower()))):
+                        product_elements.append(div)
+                
+                if product_elements:
+                    logger.info(f"Encontrados {len(product_elements)} productos por análisis de clases CSS")
+        
+        if not product_elements:
+            logger.warning(f"No se encontraron productos en la categoría: {category_name}")
+            # Debug: mostrar estructura de la página
+            logger.info("Mostrando elementos con imágenes para debug:")
+            images = soup.find_all('img')[:5]
+            for img in images:
+                parent = img.parent
+                logger.info(f"Imagen: {img.get('alt', 'sin alt')[:30]} - Padre: {parent.name} {parent.get('class', [])}")
+            
+            return products
+        
+        # Procesar productos encontrados
+        for element in product_elements:
+            try:
+                product_data = self.extract_product_info(element, category_name)
+                if product_data and product_data['nombre']:  # Solo agregar si tiene nombre
+                    products.append(product_data)
+            except Exception as e:
+                logger.error(f"Error extrayendo producto: {e}")
+                continue
+        
+        logger.info(f"Extraídos {len(products)} productos válidos de {category_name}")
+        return products
+    
+    def extract_product_info(self, element, category_name):
+        """Extraer información específica de un producto"""
+        product = {
+            'nombre': '',
+            'precio': '',
+            'categoria': category_name
+        }
+        
+        # Extraer nombre del producto con selectores más específicos
+        name_selectors = [
+            # Selectores comunes para títulos de productos
+            '.product-name',
+            '.product-title',
+            '.titulo',
+            '.name',
+            '.title',
+            'h1', 'h2', 'h3', 'h4',
+            # Selectores para enlaces de productos
+            'a[href*="product"]',
+            'a[href*="producto"]',
+            'a[href*="/p/"]',
+            'a[href*="/item/"]',
+            # Selectores alternativos
+            '.item-title',
+            '.card-title',
+            '.product-link',
+            '[data-product-name]'
+        ]
+        
+        name_found = False
+        for selector in name_selectors:
+            name_element = element.select_one(selector)
+            if name_element:
+                name_text = name_element.get_text(strip=True)
+                if name_text and len(name_text) > 2:
+                    product['nombre'] = name_text
+                    name_found = True
+                    break
+        
+        # Si no encuentra nombre con selectores, buscar el texto más largo que no sea precio
+        if not name_found:
+            all_text_elements = element.find_all(text=True)
+            longest_text = ""
+            
+            for text in all_text_elements:
+                clean_text = text.strip()
+                # Evitar textos que parezcan precios
+                if (clean_text and 
+                    len(clean_text) > len(longest_text) and 
+                    len(clean_text) > 5 and
+                    not any(symbol in clean_text for symbol in ['$', 'RD', 'pesos', 'DOP']) and
+                    not clean_text.replace('.', '').replace(',', '').isdigit()):
+                    longest_text = clean_text
+            
+            if longest_text:
+                product['nombre'] = longest_text[:100]  # Limitar longitud
+        
+        # Extraer precio con selectores más específicos
+        price_selectors = [
+            # Selectores comunes para precios
+            '.price',
+            '.precio',
+            '.product-price',
+            '.item-price',
+            '.cost',
+            '.amount',
+            '.valor',
+            '[data-price]',
+            # Selectores específicos para moneda dominicana
+            '.rd-price',
+            '.peso-price',
+            '.dop-price',
+            # Selectores para precios en ofertas
+            '.sale-price',
+            '.special-price',
+            '.current-price'
+        ]
+        
+        price_found = False
+        for selector in price_selectors:
+            price_element = element.select_one(selector)
+            if price_element:
+                price_text = price_element.get_text(strip=True)
+                if price_text:
+                    # Limpiar y formatear precio
+                    # Buscar patrones de precio (números con símbolos de moneda)
+                    price_patterns = [
+                        r'RD\$?\s*[\d,]+\.?\d*',
+                        r'\$\s*[\d,]+\.?\d*',
+                        r'[\d,]+\.?\d*\s*pesos?',
+                        r'[\d,]+\.?\d*\s*DOP',
+                        r'[\d,]+\.?\d*'
+                    ]
+                    
+                    for pattern in price_patterns:
+                        match = re.search(pattern, price_text, re.IGNORECASE)
+                        if match:
+                            product['precio'] = match.group().strip()
+                            price_found = True
+                            break
+                    
+                    if price_found:
+                        break
+        
+        # Si no encuentra precio con selectores, buscar en todo el texto
+        if not price_found:
+            all_text = element.get_text()
+            
+            # Buscar patrones de precio en todo el texto
+            price_patterns = [
+                r'RD\$\s*[\d,]+\.?\d*',
+                r'\$\s*[\d,]+\.?\d*',
+                r'[\d,]+\.?\d*\s*pesos?',
+                r'[\d,]+\.\d{2}'
+            ]
+            
+            for pattern in price_patterns:
+                match = re.search(pattern, all_text, re.IGNORECASE)
+                if match:
+                    product['precio'] = match.group().strip()
+                    break
+        
+        # Solo devolver el producto si tiene al menos nombre
+        if product['nombre'] and len(product['nombre']) > 2:
+            # Limpiar nombre de caracteres especiales
+            product['nombre'] = product['nombre'].replace('\n', ' ').replace('\t', ' ')
+            product['nombre'] = ' '.join(product['nombre'].split())  # Normalizar espacios
+            return product
+        
+        return None
+    
+    def scrape_categories(self):
+        """Función principal para extraer datos de todas las categorías"""
+        logger.info("Iniciando scraping de Sirena.do")
+        
+        # Obtener página principal
+        main_soup = self.get_page(self.base_url)
+        if not main_soup:
+            logger.error("No se pudo obtener la página principal")
+            return
+        
+        # Extraer categorías
+        categories = self.extract_categories(main_soup)
+        if not categories:
+            logger.error("No se encontraron categorías")
+            return
+        
+        # Procesar cada categoría
+        for i, category in enumerate(categories, 1):
+            logger.info(f"Procesando categoría {i}/{len(categories)}: {category['name']}")
+            
+            category_soup = self.get_page(category['url'])
+            if category_soup:
+                products = self.extract_products_from_page(category_soup, category['name'])
+                self.products_data.extend(products)
+            
+            # Pausa entre requests para ser respetuoso
+            time.sleep(1)
+        
+        logger.info(f"Scraping completado. Total productos: {len(self.products_data)}")
+    
+    def save_to_csv(self, filename='sirena_productos.csv'):
+        """Guardar datos en archivo CSV"""
+        if not self.products_data:
+            logger.warning("No hay datos para guardar")
+            return
+        
+        try:
+            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ['nombre', 'precio', 'categoria']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                
+                writer.writeheader()
+                for product in self.products_data:
+                    writer.writerow(product)
+            
+            logger.info(f"Datos guardados en {filename}")
+            print(f"✅ Archivo CSV creado exitosamente: {filename}")
+            print(f"📊 Total de productos guardados: {len(self.products_data)}")
+            
+        except Exception as e:
+            logger.error(f"Error guardando CSV: {e}")
+    
+    def run(self):
+        """Ejecutar el scraper completo"""
+        try:
+            self.scrape_categories()
+            self.save_to_csv()
+        except KeyboardInterrupt:
+            logger.info("Scraping interrumpido por el usuario")
+        except Exception as e:
+            logger.error(f"Error general: {e}")
 
 def main():
-    base_url = 'https://www.sirena.do/'
-    todos_productos = []
+    print("🚀 Iniciando scraper de Sirena.do")
+    print("=" * 50)
     
-    print("🚀 INICIANDO SCRAPING DE SIRENA SUPERMERCADOS")
-    print("=" * 60)
+    scraper = SirenaScraper()
+    scraper.run()
     
-    # Obtener página principal
-    print("Obteniendo página principal...")
-    html_principal = obtener_pagina(base_url)
-    
-    if not html_principal:
-        print("❌ No se pudo obtener la página principal")
-        return
-    
-    # Guardar HTML principal para análisis
-    with open('debug_sirena_principal.html', 'w', encoding='utf-8') as f:
-        f.write(html_principal)
-    print("✓ HTML principal guardado como debug_sirena_principal.html")
-    
-    soup_principal = BeautifulSoup(html_principal, 'html.parser')
-    
-    # Encontrar categorías
-    print("\nBuscando categorías de productos...")
-    categorias = encontrar_categorias_sirena(soup_principal, base_url)
-    
-    if not categorias:
-        print("❌ No se encontraron categorías válidas")
-        print("Analizando estructura de la página...")
-        
-        # Mostrar algunos enlaces encontrados para debug
-        todos_enlaces = soup_principal.find_all('a', href=True)
-        print(f"\nTotal de enlaces encontrados: {len(todos_enlaces)}")
-        print("\nPrimeros 10 enlaces:")
-        for i, enlace in enumerate(todos_enlaces[:10]):
-            href = enlace.get('href', '')
-            texto = enlace.get_text().strip()
-            print(f"  {i+1}. {texto[:30]} -> {href[:50]}")
-        
-        return
-    
-    print(f"\n✓ {len(categorias)} categorías encontradas:")
-    for i, (url, nombre) in enumerate(categorias, 1):
-        print(f"  {i:2d}. {nombre}")
-    
-    # Limitar a las primeras categorías para prueba
-    categorias_a_procesar = categorias[:5]  # Solo primeras 5 categorías
-    print(f"\nProcesando solo las primeras {len(categorias_a_procesar)} categorías para prueba...")
-    
-    # Procesar cada categoría
-    for i, (url_categoria, nombre_categoria) in enumerate(categorias_a_procesar, 1):
-        try:
-            print(f"\n[{i}/{len(categorias_a_procesar)}] Procesando: {nombre_categoria}")
-            
-            productos_categoria = procesar_categoria_sirena(url_categoria, nombre_categoria)
-            
-            if productos_categoria:
-                todos_productos.extend(productos_categoria)
-                print(f"✓ {len(productos_categoria)} productos agregados")
-            
-            time.sleep(3)  # Pausa más larga entre categorías
-            
-        except Exception as e:
-            print(f"❌ Error procesando {nombre_categoria}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
-    
-    # ELIMINAR DUPLICADOS Y GUARDAR
-    if todos_productos:
-        productos_unicos = eliminar_duplicados_avanzado(todos_productos)
-        
-        # Preparar datos finales
-        productos_finales = []
-        for producto in productos_unicos:
-            productos_finales.append({
-                'Nombre': producto['Nombre'],
-                'Precio': producto['Precio'],
-                'Categorias': '; '.join(producto['Categorias']),
-                'URL_Categoria': producto['URL_Categoria']
-            })
-        
-        # Guardar resultados
-        timestamp = int(time.time())
-        archivo_final = f'inventario_sirena_{timestamp}.csv'
-        
-        with open(archivo_final, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['Nombre', 'Precio', 'Categorias', 'URL_Categoria'])
-            writer.writeheader()
-            writer.writerows(productos_finales)
-        
-        print(f'\n🎉 SCRAPING COMPLETADO')
-        print(f'✓ {len(productos_finales)} productos únicos guardados en {archivo_final}')
-        
-        # Resumen por categoría
-        resumen = defaultdict(int)
-        for producto in productos_unicos:
-            for categoria in producto['Categorias']:
-                resumen[categoria] += 1
-        
-        print(f"\n📊 RESUMEN POR CATEGORÍA:")
-        for categoria, cantidad in sorted(resumen.items(), key=lambda x: x[1], reverse=True):
-            print(f"   {categoria}: {cantidad} productos")
-            
-    else:
-        print('\n❌ No se extrajo ningún producto')
-        print('Revisa los archivos debug_sirena_*.html para analizar la estructura de la página')
+    print("=" * 50)
+    print("✨ Proceso completado")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n⏹ Proceso interrumpido por el usuario")
-    except Exception as e:
-        print(f"\n❌ Error general: {e}")
-        import traceback
-        traceback.print_exc()
+    main()
