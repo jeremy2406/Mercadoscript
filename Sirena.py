@@ -1,505 +1,580 @@
-import requests
-from bs4 import BeautifulSoup
-import csv
 import time
+import csv
 import logging
 import re
 from urllib.parse import urljoin, urlparse
-import sys
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import json
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from bs4 import BeautifulSoup
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class SirenaScraper:
-    def __init__(self):
+class SirenaSeleniumScraper:
+    def __init__(self, headless=True):
         self.base_url = "https://www.sirena.do/"
-        self.session = self.create_session()
+        self.driver = None
         self.products_data = []
+        self.headless = headless
         
-    def create_session(self):
-        """Crear sesión con reintentos y headers apropiados"""
-        session = requests.Session()
-        
-        # Configurar reintentos
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        
-        # Headers para parecer un navegador real
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'es-DO,es;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        })
-        
-        return session
-    
-    def get_page(self, url):
-        """Obtener contenido de una página con manejo de errores"""
+    def setup_driver(self):
+        """Configurar el driver de Selenium"""
         try:
-            logger.info(f"Obteniendo página: {url}")
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
-            return BeautifulSoup(response.content, 'html.parser')
-        except requests.RequestException as e:
-            logger.error(f"Error al obtener {url}: {e}")
+            chrome_options = Options()
+            
+            if self.headless:
+                chrome_options.add_argument("--headless")
+            
+            # Opciones para mejor compatibilidad
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+            
+            # User agent realista
+            chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            
+            # Configurar ventana
+            chrome_options.add_argument("--window-size=1920,1080")
+            
+            # Crear driver
+            self.driver = webdriver.Chrome(options=chrome_options)
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            logger.info("✅ Driver de Selenium configurado correctamente")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error configurando Selenium: {e}")
+            logger.error("💡 Asegúrate de tener ChromeDriver instalado")
+            logger.error("💡 Instala con: pip install selenium")
+            logger.error("💡 Descarga ChromeDriver desde: https://chromedriver.chromium.org/")
+            return False
+    
+    def get_page_with_js(self, url, wait_seconds=10):
+        """Cargar página y esperar que se renderice el JavaScript"""
+        try:
+            logger.info(f"🌐 Cargando página: {url}")
+            self.driver.get(url)
+            
+            # Esperar que la página cargue
+            time.sleep(3)
+            
+            # Intentar detectar cuando el contenido se ha cargado
+            try:
+                # Esperar por elementos que indiquen que la página se cargó
+                WebDriverWait(self.driver, wait_seconds).until(
+                    lambda driver: driver.execute_script("return document.readyState") == "complete"
+                )
+                
+                # Esperar un poco más por el contenido dinámico
+                time.sleep(2)
+                
+                # Hacer scroll para activar lazy loading si existe
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+                time.sleep(1)
+                self.driver.execute_script("window.scrollTo(0, 0);")
+                time.sleep(1)
+                
+            except TimeoutException:
+                logger.warning("⚠️ Timeout esperando carga completa, continuando...")
+            
+            # Obtener el HTML renderizado
+            html = self.driver.page_source
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            logger.info("✅ Página cargada y renderizada")
+            return soup
+            
+        except Exception as e:
+            logger.error(f"❌ Error cargando página {url}: {e}")
             return None
     
-    def extract_categories(self, soup):
-        """Extraer categorías y subcategorías del menú principal"""
-        categories = []
+    def analyze_spa_structure(self, soup):
+        """Analizar la estructura de la SPA para entender cómo funciona"""
+        logger.info("=== ANÁLISIS DE APLICACIÓN WEB (SPA) ===")
         
-        # Debug: imprimir estructura HTML para análisis
-        logger.info("Analizando estructura HTML...")
-        
-        # Selectores específicos para Sirena.do
-        sirena_selectors = [
-            # Selectores comunes para sitios de e-commerce dominicanos
-            '.category-link',
-            '.categoria',
-            '.menu-categoria',
-            '.departamento',
-            '.section-link',
-            # Selectores Bootstrap comunes
-            '.navbar-nav a',
-            '.nav-link',
-            '.dropdown-item',
-            # Selectores de menú lateral
-            '.sidebar-menu a',
-            '.side-menu a',
-            '.menu-item a',
-            # Selectores de navegación
-            'nav a[href*="categoria"]',
-            'nav a[href*="category"]',
-            'nav a[href*="departamento"]',
-            'a[href*="/c/"]',
-            'a[href*="/cat/"]',
-            'a[href*="/categoria/"]',
-            # Mega menú
-            '.mega-menu a',
-            '.dropdown-menu a',
+        # Buscar elementos que se cargan dinámicamente
+        dynamic_elements = [
+            "div[id*='app']", "div[id*='root']", "div[id*='main']",
+            "div[class*='app']", "div[class*='container']", "div[class*='content']",
+            "[ng-app]", "[data-react-root]", "[data-vue-root]"
         ]
         
-        menu_items = []
+        for selector in dynamic_elements:
+            elements = soup.select(selector)
+            if elements:
+                logger.info(f"✅ Encontrado contenedor SPA: {selector} ({len(elements)} elementos)")
+                for elem in elements[:3]:
+                    classes = elem.get('class', [])
+                    elem_id = elem.get('id', '')
+                    logger.info(f"   - ID: {elem_id}, Clases: {classes}")
         
-        # Intentar cada selector específico
-        for selector in sirena_selectors:
-            menu_items = soup.select(selector)
-            if menu_items and len(menu_items) > 3:  # Al menos 3 categorías
-                logger.info(f"Encontrado menú con selector: {selector} ({len(menu_items)} items)")
-                break
+        # Analizar scripts para entender el framework
+        scripts = soup.find_all('script')
+        frameworks = {
+            'React': ['react', 'jsx', 'ReactDOM'],
+            'Vue': ['vue', 'v-', 'Vue.js'],
+            'Angular': ['angular', 'ng-', '@angular'],
+            'Next.js': ['next', '_next'],
+            'Nuxt': ['nuxt', '_nuxt'],
+            'jQuery': ['jquery', '$']
+        }
         
-        if not menu_items:
-            # Análisis más profundo de la estructura
-            logger.info("Analizando todos los enlaces para encontrar patrones...")
-            all_links = soup.find_all('a', href=True)
-            
-            # Filtrar enlaces que podrían ser categorías
-            potential_categories = []
-            for link in all_links:
-                href = link.get('href', '').lower()
-                text = link.get_text(strip=True)
+        detected_frameworks = []
+        for script in scripts:
+            script_content = str(script)
+            for framework, indicators in frameworks.items():
+                if any(indicator.lower() in script_content.lower() for indicator in indicators):
+                    if framework not in detected_frameworks:
+                        detected_frameworks.append(framework)
+        
+        if detected_frameworks:
+            logger.info(f"🔍 Frameworks detectados: {', '.join(detected_frameworks)}")
+        
+        # Buscar elementos de navegación después del renderizado
+        nav_selectors = [
+            'nav', 'header', '.navbar', '.navigation', '.menu',
+            '.nav', '.header', '.top-bar', '.main-nav'
+        ]
+        
+        total_nav_elements = 0
+        for selector in nav_selectors:
+            elements = soup.select(selector)
+            if elements:
+                total_nav_elements += len(elements)
+                logger.info(f"📋 Navegación '{selector}': {len(elements)} elementos")
                 
-                # Patrones comunes en URLs de categorías
-                category_patterns = [
-                    '/categoria/', '/category/', '/cat/', '/c/',
-                    '/departamento/', '/seccion/', '/productos/',
-                    '/tienda/', '/shop/'
-                ]
-                
-                if (text and len(text) > 2 and len(text) < 50 and
-                    any(pattern in href for pattern in category_patterns)):
-                    potential_categories.append(link)
-            
-            if potential_categories:
-                menu_items = potential_categories
-                logger.info(f"Encontradas {len(menu_items)} categorías potenciales por análisis de patrones")
-            else:
-                # Último recurso: buscar elementos del DOM que contengan listas de categorías
-                logger.info("Buscando estructuras de navegación...")
-                nav_elements = soup.find_all(['nav', 'ul', 'div'], 
-                                           class_=lambda x: x and any(term in x.lower() for term in 
-                                           ['menu', 'nav', 'categoria', 'category', 'sidebar']))
-                
-                for nav in nav_elements:
-                    links = nav.find_all('a', href=True)
-                    if len(links) > 2:  # Al menos 2 enlaces
-                        menu_items.extend(links)
-                        logger.info(f"Encontrados {len(links)} enlaces en elemento de navegación")
-                
-                if not menu_items:
-                    logger.warning("No se encontraron categorías. Mostrando estructura HTML para debug...")
-                    # Mostrar los primeros elementos para debug
-                    nav_tags = soup.find_all(['nav', 'header'])[:3]
-                    for i, tag in enumerate(nav_tags):
-                        logger.info(f"Estructura {i+1}: {tag.name} - clases: {tag.get('class', [])}")
-                        links = tag.find_all('a')[:5]
-                        for link in links:
-                            logger.info(f"  - Link: {link.get_text(strip=True)[:30]} -> {link.get('href', '')[:50]}")
+                # Mostrar contenido de navegación
+                for i, elem in enumerate(elements[:2]):
+                    links = elem.find_all('a', href=True)
+                    if links:
+                        logger.info(f"   Nav {i+1}: {len(links)} enlaces")
+                        for link in links[:5]:
+                            text = link.get_text(strip=True)
+                            href = link.get('href')
+                            if text and len(text) < 30:
+                                logger.info(f"      → {text} ({href})")
         
-        # Procesar enlaces encontrados
-        for item in menu_items:
-            href = item.get('href', '')
-            text = item.get_text(strip=True)
-            
-            # Filtros más específicos para Sirena.do
-            if (href and text and 
-                len(text) > 1 and len(text) < 100 and
-                not href.startswith('#') and 
-                not href.startswith('javascript:') and
-                not href.startswith('mailto:') and
-                not href.startswith('tel:') and
-                'contacto' not in text.lower() and
-                'login' not in text.lower() and
-                'carrito' not in text.lower() and
-                'cuenta' not in text.lower() and
-                'ayuda' not in text.lower()):
-                
-                full_url = urljoin(self.base_url, href)
-                
-                # Evitar URLs de la misma página
-                if full_url != self.base_url.rstrip('/'):
-                    categories.append({
-                        'name': text,
-                        'url': full_url
-                    })
+        logger.info(f"📊 Total elementos de navegación encontrados: {total_nav_elements}")
         
-        # Eliminar duplicados y filtrar mejor
-        seen_urls = set()
-        unique_categories = []
+        # Buscar contenido de productos
+        product_indicators = soup.find_all(text=lambda t: t and 
+            any(word in str(t).lower() for word in ['producto', 'product', 'precio', 'price', '$', 'rd']))
         
-        for cat in categories:
-            url_key = cat['url'].lower().rstrip('/')
-            if (url_key not in seen_urls and 
-                len(cat['name']) > 2 and
-                not any(skip in cat['name'].lower() for skip in 
-                       ['facebook', 'twitter', 'instagram', 'whatsapp', 'youtube',
-                        'términos', 'privacidad', 'políticas', 'sobre nosotros'])):
-                seen_urls.add(url_key)
-                unique_categories.append(cat)
+        logger.info(f"💰 Indicadores de productos encontrados: {len(product_indicators)}")
         
-        # Limitar a las primeras 20 categorías para evitar ruido
-        unique_categories = unique_categories[:20]
+        # Buscar imágenes (productos suelen tener muchas imágenes)
+        images = soup.find_all('img')
+        logger.info(f"🖼️ Imágenes encontradas: {len(images)}")
         
-        logger.info(f"Encontradas {len(unique_categories)} categorías únicas")
+        if images:
+            product_images = [img for img in images if 
+                any(term in (img.get('src', '') + img.get('alt', '')).lower() 
+                    for term in ['product', 'producto', 'item'])]
+            logger.info(f"🖼️ Imágenes que parecen productos: {len(product_images)}")
         
-        # Mostrar las categorías encontradas para debug
-        for cat in unique_categories[:10]:  # Mostrar primeras 10
-            logger.info(f"Categoría: {cat['name']} -> {cat['url']}")
-        
-        return unique_categories
+        logger.info("=== FIN ANÁLISIS SPA ===")
     
-    def extract_products_from_page(self, soup, category_name):
-        """Extraer productos de una página de categoría"""
-        products = []
+    def wait_for_dynamic_content(self, timeout=15):
+        """Esperar que el contenido dinámico se cargue"""
+        logger.info("⏳ Esperando contenido dinámico...")
         
-        # Selectores específicos para sitios de e-commerce dominicanos y Sirena.do
-        product_selectors = [
-            # Selectores comunes de productos
-            '.product-item',
-            '.product',
-            '.item-product',
-            '.product-card',
-            '.producto',
-            '.articulo',
-            '[data-product]',
-            '.grid-item',
-            '.product-box',
-            '.item-box',
-            # Selectores de tarjetas de producto
-            '.card.product',
-            '.product-tile',
-            '.product-thumb',
-            '.item',
-            # Selectores para sitios Bootstrap
-            '.col .product',
-            '.col-md-3',
-            '.col-md-4',
-            '.col-sm-6',
-            # Selectores específicos de grids
-            '.products-grid .item',
-            '.catalog-item',
-            '.shop-item',
+        # Estrategias para detectar contenido cargado
+        strategies = [
+            # Esperar por enlaces de navegación
+            (By.CSS_SELECTOR, "nav a, .navbar a, .menu a", "enlaces de navegación"),
+            # Esperar por productos
+            (By.CSS_SELECTOR, ".product, .item, [data-product]", "elementos de producto"),
+            # Esperar por imágenes de productos
+            (By.CSS_SELECTOR, "img[alt*='product'], img[src*='product']", "imágenes de productos"),
+            # Esperar por precios
+            (By.XPATH, "//*[contains(text(), '$') or contains(text(), 'RD') or contains(text(), 'precio')]", "elementos con precios")
         ]
         
-        product_elements = []
-        
-        # Intentar selectores específicos primero
-        for selector in product_selectors:
-            product_elements = soup.select(selector)
-            if product_elements and len(product_elements) > 2:
-                logger.info(f"Productos encontrados con selector: {selector} ({len(product_elements)} items)")
-                break
-        
-        if not product_elements:
-            logger.info("Buscando productos con análisis más profundo...")
-            
-            # Buscar divs que contengan imágenes y precios (patrón común de productos)
-            potential_products = []
-            
-            # Buscar contenedores que tengan imagen + precio
-            containers = soup.find_all('div')
-            for container in containers:
-                has_image = container.find('img')
-                has_price = container.find(text=lambda text: text and any(symbol in str(text) for symbol in 
-                                          ['$', 'RD', 'pesos', 'DOP']))
-                
-                if has_image and has_price:
-                    potential_products.append(container)
-            
-            if potential_products:
-                product_elements = potential_products[:30]  # Limitar para evitar ruido
-                logger.info(f"Encontrados {len(product_elements)} productos potenciales por análisis de imagen+precio")
-            
-            # Si aún no encuentra, buscar patrones de clase CSS
-            if not product_elements:
-                product_divs = soup.find_all('div', class_=lambda x: x and 
-                    any(term in ' '.join(x).lower() for term in ['product', 'item', 'card', 'box', 'tile']))
-                
-                # Filtrar los que realmente parecen productos
-                for div in product_divs:
-                    if (div.find('img') and 
-                        (div.find(text=lambda t: t and '$' in str(t)) or 
-                         div.find(class_=lambda x: x and 'price' in str(x).lower()))):
-                        product_elements.append(div)
-                
-                if product_elements:
-                    logger.info(f"Encontrados {len(product_elements)} productos por análisis de clases CSS")
-        
-        if not product_elements:
-            logger.warning(f"No se encontraron productos en la categoría: {category_name}")
-            # Debug: mostrar estructura de la página
-            logger.info("Mostrando elementos con imágenes para debug:")
-            images = soup.find_all('img')[:5]
-            for img in images:
-                parent = img.parent
-                logger.info(f"Imagen: {img.get('alt', 'sin alt')[:30]} - Padre: {parent.name} {parent.get('class', [])}")
-            
-            return products
-        
-        # Procesar productos encontrados
-        for element in product_elements:
+        for by, selector, description in strategies:
             try:
-                product_data = self.extract_product_info(element, category_name)
-                if product_data and product_data['nombre']:  # Solo agregar si tiene nombre
-                    products.append(product_data)
-            except Exception as e:
-                logger.error(f"Error extrayendo producto: {e}")
+                logger.info(f"🔍 Buscando {description}...")
+                elements = WebDriverWait(self.driver, timeout).until(
+                    EC.presence_of_all_elements_located((by, selector))
+                )
+                if elements:
+                    logger.info(f"✅ Encontrados {len(elements)} {description}")
+                    return True
+            except TimeoutException:
+                logger.info(f"⏳ No se encontraron {description} en {timeout}s")
                 continue
         
-        logger.info(f"Extraídos {len(products)} productos válidos de {category_name}")
+        logger.warning("⚠️ No se detectó contenido dinámico específico, continuando...")
+        return False
+    
+    def extract_categories_selenium(self):
+        """Extraer categorías usando Selenium"""
+        soup = self.get_page_with_js(self.base_url, wait_seconds=15)
+        if not soup:
+            return []
+        
+        # Analizar estructura SPA
+        self.analyze_spa_structure(soup)
+        
+        # Esperar contenido dinámico
+        self.wait_for_dynamic_content()
+        
+        # Obtener HTML actualizado después de esperar
+        time.sleep(3)
+        updated_html = self.driver.page_source
+        soup = BeautifulSoup(updated_html, 'html.parser')
+        
+        logger.info("🔍 Extrayendo categorías del contenido renderizado...")
+        
+        # Selectores expandidos para SPA
+        category_selectors = [
+            # Selectores generales
+            'nav a', 'header a', '.navbar a', '.menu a',
+            '.navigation a', '.nav-link', '.menu-item a',
+            # Selectores específicos de categorías
+            'a[href*="categoria"]', 'a[href*="category"]',
+            'a[href*="/c/"]', 'a[href*="/cat/"]',
+            'a[href*="productos"]', 'a[href*="products"]',
+            # Selectores de dropdown/menú
+            '.dropdown-item', '.dropdown-menu a',
+            '.mega-menu a', '.submenu a',
+            # Selectores por contenido
+            'a[title*="categoria"]', 'a[aria-label*="categoria"]'
+        ]
+        
+        all_links = []
+        
+        # Recopilar enlaces con todos los selectores
+        for selector in category_selectors:
+            try:
+                elements = soup.select(selector)
+                if elements:
+                    logger.info(f"🔗 Selector '{selector}': {len(elements)} enlaces")
+                    for elem in elements:
+                        href = elem.get('href', '')
+                        text = elem.get_text(strip=True)
+                        if href and text and len(text) > 1:
+                            all_links.append({
+                                'text': text,
+                                'href': href,
+                                'selector': selector
+                            })
+            except Exception as e:
+                logger.debug(f"Error con selector {selector}: {e}")
+        
+        # Si no encuentra enlaces específicos, buscar TODOS los enlaces
+        if not all_links:
+            logger.info("🔍 Buscando TODOS los enlaces en la página renderizada...")
+            all_page_links = soup.find_all('a', href=True)
+            logger.info(f"🔗 Total enlaces encontrados: {len(all_page_links)}")
+            
+            for link in all_page_links:
+                href = link.get('href', '')
+                text = link.get_text(strip=True)
+                if href and text:
+                    all_links.append({
+                        'text': text,
+                        'href': href,
+                        'selector': 'all_links'
+                    })
+        
+        logger.info(f"📊 Total enlaces recopilados: {len(all_links)}")
+        
+        # Mostrar muestra de enlaces
+        logger.info("=== MUESTRA DE ENLACES ENCONTRADOS ===")
+        for i, link in enumerate(all_links[:15]):
+            logger.info(f"{i+1}. '{link['text'][:40]}' → {link['href'][:50]} [{link['selector']}]")
+        
+        # Filtrar y procesar enlaces
+        categories = self.filter_category_links(all_links)
+        
+        logger.info(f"✅ Categorías finales encontradas: {len(categories)}")
+        for i, cat in enumerate(categories[:10]):
+            logger.info(f"{i+1}. {cat['name']} → {cat['url']}")
+        
+        return categories
+    
+    def filter_category_links(self, all_links):
+        """Filtrar enlaces para encontrar categorías válidas"""
+        categories = []
+        
+        # Filtros para categorías
+        skip_terms = [
+            'login', 'registro', 'sign', 'account', 'cuenta', 'perfil',
+            'carrito', 'cart', 'checkout', 'pago', 'payment',
+            'contacto', 'contact', 'about', 'acerca', 'nosotros',
+            'ayuda', 'help', 'support', 'soporte', 'faq',
+            'terminos', 'terms', 'privacidad', 'privacy', 'politicas',
+            'facebook', 'twitter', 'instagram', 'youtube', 'whatsapp'
+        ]
+        
+        category_indicators = [
+            'categoria', 'category', 'departamento', 'seccion',
+            'productos', 'products', 'tienda', 'shop', 'store'
+        ]
+        
+        seen_urls = set()
+        
+        for link_data in all_links:
+            text = link_data['text']
+            href = link_data['href']
+            
+            # Filtros básicos
+            if (not text or not href or 
+                len(text) < 2 or len(text) > 100 or
+                href.startswith('#') or 
+                href.startswith('javascript:') or
+                href.startswith('mailto:') or
+                href.startswith('tel:')):
+                continue
+            
+            # Filtrar términos no deseados
+            if any(term in text.lower() for term in skip_terms):
+                continue
+            
+            # Crear URL completa
+            if href.startswith('/'):
+                full_url = urljoin(self.base_url, href)
+            elif href.startswith('http'):
+                full_url = href
+            else:
+                full_url = urljoin(self.base_url, href)
+            
+            # Evitar duplicados
+            url_key = full_url.lower().rstrip('/')
+            if url_key in seen_urls or url_key == self.base_url.rstrip('/').lower():
+                continue
+            
+            seen_urls.add(url_key)
+            
+            # Priorizar enlaces que parezcan categorías
+            is_likely_category = (
+                any(indicator in text.lower() for indicator in category_indicators) or
+                any(indicator in href.lower() for indicator in category_indicators) or
+                (len(text.split()) <= 4 and len(text) > 3)
+            )
+            
+            categories.append({
+                'name': text,
+                'url': full_url,
+                'priority': 1 if is_likely_category else 2
+            })
+        
+        # Ordenar por prioridad y limitar
+        categories.sort(key=lambda x: (x['priority'], len(x['name'])))
+        return categories[:20]
+    
+    def extract_products_selenium(self, category_url, category_name):
+        """Extraer productos de una categoría usando Selenium"""
+        logger.info(f"🛒 Extrayendo productos de: {category_name}")
+        
+        soup = self.get_page_with_js(category_url, wait_seconds=10)
+        if not soup:
+            return []
+        
+        # Buscar productos con múltiples estrategias
+        products = []
+        
+        # Estrategia 1: Selectores específicos
+        product_selectors = [
+            '.product', '.product-item', '.product-card',
+            '.item', '.grid-item', '.catalog-item',
+            '[data-product]', '[data-product-id]',
+            '.card', '.shop-item'
+        ]
+        
+        found_products = False
+        for selector in product_selectors:
+            elements = soup.select(selector)
+            if elements and len(elements) > 2:
+                logger.info(f"✅ Productos encontrados con '{selector}': {len(elements)}")
+                
+                for elem in elements[:30]:  # Limitar para evitar ruido
+                    product_data = self.extract_product_info(elem, category_name)
+                    if product_data:
+                        products.append(product_data)
+                
+                found_products = True
+                break
+        
+        # Estrategia 2: Análisis heurístico si no encuentra productos
+        if not found_products:
+            logger.info("🔍 Usando análisis heurístico para productos...")
+            
+            # Buscar elementos que contengan imágenes y precios
+            all_divs = soup.find_all('div')
+            for div in all_divs:
+                has_image = div.find('img')
+                has_price_text = div.find(text=lambda t: t and 
+                    any(symbol in str(t) for symbol in ['$', 'RD', 'precio', 'price']))
+                
+                if has_image and has_price_text:
+                    product_data = self.extract_product_info(div, category_name)
+                    if product_data:
+                        products.append(product_data)
+        
+        logger.info(f"📦 Productos extraídos de '{category_name}': {len(products)}")
         return products
     
     def extract_product_info(self, element, category_name):
-        """Extraer información específica de un producto"""
+        """Extraer información de un producto"""
         product = {
             'nombre': '',
             'precio': '',
-            'categoria': category_name
+            'categoria': category_name,
+            'imagen': '',
+            'enlace': ''
         }
         
-        # Extraer nombre del producto con selectores más específicos
-        name_selectors = [
-            # Selectores comunes para títulos de productos
-            '.product-name',
-            '.product-title',
-            '.titulo',
-            '.name',
-            '.title',
-            'h1', 'h2', 'h3', 'h4',
-            # Selectores para enlaces de productos
-            'a[href*="product"]',
-            'a[href*="producto"]',
-            'a[href*="/p/"]',
-            'a[href*="/item/"]',
-            # Selectores alternativos
-            '.item-title',
-            '.card-title',
-            '.product-link',
-            '[data-product-name]'
-        ]
-        
-        name_found = False
+        # Extraer nombre
+        name_selectors = ['h1', 'h2', 'h3', 'h4', '.product-name', '.name', '.title', 'a']
         for selector in name_selectors:
-            name_element = element.select_one(selector)
-            if name_element:
-                name_text = name_element.get_text(strip=True)
-                if name_text and len(name_text) > 2:
+            name_elem = element.select_one(selector)
+            if name_elem:
+                name_text = name_elem.get_text(strip=True)
+                if name_text and 3 <= len(name_text) <= 150:
                     product['nombre'] = name_text
-                    name_found = True
                     break
         
-        # Si no encuentra nombre con selectores, buscar el texto más largo que no sea precio
-        if not name_found:
-            all_text_elements = element.find_all(text=True)
-            longest_text = ""
-            
-            for text in all_text_elements:
-                clean_text = text.strip()
-                # Evitar textos que parezcan precios
-                if (clean_text and 
-                    len(clean_text) > len(longest_text) and 
-                    len(clean_text) > 5 and
-                    not any(symbol in clean_text for symbol in ['$', 'RD', 'pesos', 'DOP']) and
-                    not clean_text.replace('.', '').replace(',', '').isdigit()):
-                    longest_text = clean_text
-            
-            if longest_text:
-                product['nombre'] = longest_text[:100]  # Limitar longitud
-        
-        # Extraer precio con selectores más específicos
-        price_selectors = [
-            # Selectores comunes para precios
-            '.price',
-            '.precio',
-            '.product-price',
-            '.item-price',
-            '.cost',
-            '.amount',
-            '.valor',
-            '[data-price]',
-            # Selectores específicos para moneda dominicana
-            '.rd-price',
-            '.peso-price',
-            '.dop-price',
-            # Selectores para precios en ofertas
-            '.sale-price',
-            '.special-price',
-            '.current-price'
+        # Extraer precio
+        price_patterns = [
+            r'RD\$\s*[\d,]+\.?\d*',
+            r'\$\s*[\d,]+\.?\d*',
+            r'[\d,]+\.\d{2}',
+            r'[\d,]+\s*pesos?'
         ]
         
-        price_found = False
-        for selector in price_selectors:
-            price_element = element.select_one(selector)
-            if price_element:
-                price_text = price_element.get_text(strip=True)
-                if price_text:
-                    # Limpiar y formatear precio
-                    # Buscar patrones de precio (números con símbolos de moneda)
-                    price_patterns = [
-                        r'RD\$?\s*[\d,]+\.?\d*',
-                        r'\$\s*[\d,]+\.?\d*',
-                        r'[\d,]+\.?\d*\s*pesos?',
-                        r'[\d,]+\.?\d*\s*DOP',
-                        r'[\d,]+\.?\d*'
-                    ]
-                    
-                    for pattern in price_patterns:
-                        match = re.search(pattern, price_text, re.IGNORECASE)
-                        if match:
-                            product['precio'] = match.group().strip()
-                            price_found = True
-                            break
-                    
-                    if price_found:
-                        break
+        element_text = element.get_text()
+        for pattern in price_patterns:
+            match = re.search(pattern, element_text, re.IGNORECASE)
+            if match:
+                product['precio'] = match.group().strip()
+                break
         
-        # Si no encuentra precio con selectores, buscar en todo el texto
-        if not price_found:
-            all_text = element.get_text()
-            
-            # Buscar patrones de precio en todo el texto
-            price_patterns = [
-                r'RD\$\s*[\d,]+\.?\d*',
-                r'\$\s*[\d,]+\.?\d*',
-                r'[\d,]+\.?\d*\s*pesos?',
-                r'[\d,]+\.\d{2}'
-            ]
-            
-            for pattern in price_patterns:
-                match = re.search(pattern, all_text, re.IGNORECASE)
-                if match:
-                    product['precio'] = match.group().strip()
-                    break
+        # Extraer imagen
+        img_elem = element.find('img')
+        if img_elem:
+            img_src = img_elem.get('src') or img_elem.get('data-src')
+            if img_src:
+                product['imagen'] = urljoin(self.base_url, img_src)
         
-        # Solo devolver el producto si tiene al menos nombre
-        if product['nombre'] and len(product['nombre']) > 2:
-            # Limpiar nombre de caracteres especiales
-            product['nombre'] = product['nombre'].replace('\n', ' ').replace('\t', ' ')
-            product['nombre'] = ' '.join(product['nombre'].split())  # Normalizar espacios
+        # Extraer enlace
+        link_elem = element.find('a', href=True)
+        if link_elem:
+            href = link_elem.get('href')
+            if href:
+                product['enlace'] = urljoin(self.base_url, href)
+        
+        # Solo devolver si tiene nombre válido
+        if product['nombre'] and len(product['nombre']) >= 3:
             return product
         
         return None
     
-    def scrape_categories(self):
-        """Función principal para extraer datos de todas las categorías"""
-        logger.info("Iniciando scraping de Sirena.do")
+    def run_selenium_scraping(self):
+        """Ejecutar scraping completo con Selenium"""
+        logger.info("🚀 Iniciando scraping con Selenium...")
         
-        # Obtener página principal
-        main_soup = self.get_page(self.base_url)
-        if not main_soup:
-            logger.error("No se pudo obtener la página principal")
-            return
+        if not self.setup_driver():
+            return False
         
-        # Extraer categorías
-        categories = self.extract_categories(main_soup)
-        if not categories:
-            logger.error("No se encontraron categorías")
-            return
-        
-        # Procesar cada categoría
-        for i, category in enumerate(categories, 1):
-            logger.info(f"Procesando categoría {i}/{len(categories)}: {category['name']}")
+        try:
+            # Extraer categorías
+            categories = self.extract_categories_selenium()
+            if not categories:
+                logger.error("❌ No se encontraron categorías")
+                return False
             
-            category_soup = self.get_page(category['url'])
-            if category_soup:
-                products = self.extract_products_from_page(category_soup, category['name'])
-                self.products_data.extend(products)
+            # Procesar categorías
+            for i, category in enumerate(categories, 1):
+                logger.info(f"📂 [{i}/{len(categories)}] Procesando: {category['name']}")
+                
+                try:
+                    products = self.extract_products_selenium(category['url'], category['name'])
+                    self.products_data.extend(products)
+                    
+                    # Pausa entre categorías
+                    time.sleep(3)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error en categoría {category['name']}: {e}")
+                    continue
             
-            # Pausa entre requests para ser respetuoso
-            time.sleep(1)
-        
-        logger.info(f"Scraping completado. Total productos: {len(self.products_data)}")
+            logger.info(f"🎉 Scraping completado. Total productos: {len(self.products_data)}")
+            return True
+            
+        finally:
+            if self.driver:
+                self.driver.quit()
+                logger.info("🔚 Driver de Selenium cerrado")
     
-    def save_to_csv(self, filename='sirena_productos.csv'):
-        """Guardar datos en archivo CSV"""
+    def save_to_csv(self, filename='sirena_productos_selenium.csv'):
+        """Guardar productos en CSV"""
         if not self.products_data:
-            logger.warning("No hay datos para guardar")
+            logger.warning("⚠️ No hay productos para guardar")
             return
         
         try:
             with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = ['nombre', 'precio', 'categoria']
+                fieldnames = ['nombre', 'precio', 'categoria', 'imagen', 'enlace']
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 
                 writer.writeheader()
                 for product in self.products_data:
                     writer.writerow(product)
             
-            logger.info(f"Datos guardados en {filename}")
-            print(f"✅ Archivo CSV creado exitosamente: {filename}")
-            print(f"📊 Total de productos guardados: {len(self.products_data)}")
+            logger.info(f"💾 Productos guardados en: {filename}")
+            print(f"✅ Archivo creado: {filename}")
+            print(f"📊 Total productos: {len(self.products_data)}")
             
         except Exception as e:
-            logger.error(f"Error guardando CSV: {e}")
+            logger.error(f"❌ Error guardando CSV: {e}")
     
-    def run(self):
-        """Ejecutar el scraper completo"""
-        try:
-            self.scrape_categories()
-            self.save_to_csv()
-        except KeyboardInterrupt:
-            logger.info("Scraping interrumpido por el usuario")
-        except Exception as e:
-            logger.error(f"Error general: {e}")
+    def print_sample_products(self):
+        """Mostrar muestra de productos"""
+        if not self.products_data:
+            return
+        
+        print("\n📋 MUESTRA DE PRODUCTOS:")
+        print("=" * 60)
+        
+        for i, product in enumerate(self.products_data[:5], 1):
+            print(f"{i}. {product['nombre']}")
+            print(f"   💰 {product['precio']}")
+            print(f"   📂 {product['categoria']}")
+            print("-" * 40)
 
 def main():
-    print("🚀 Iniciando scraper de Sirena.do")
+    print("🤖 Sirena.do Scraper con Selenium")
+    print("=" * 50)
+    print("📋 Este scraper maneja contenido JavaScript dinámico")
+    print("⚙️  Requiere: pip install selenium")
+    print("🔧 Requiere: ChromeDriver instalado")
     print("=" * 50)
     
-    scraper = SirenaScraper()
-    scraper.run()
+    # Preguntar si usar modo headless
+    try:
+        headless_input = input("¿Ejecutar en modo headless? (s/N): ").lower()
+        headless = headless_input in ['s', 'y', 'yes', 'sí']
+    except:
+        headless = True
+    
+    scraper = SirenaSeleniumScraper(headless=headless)
+    
+    if scraper.run_selenium_scraping():
+        scraper.print_sample_products()
+        scraper.save_to_csv()
+    else:
+        print("❌ Error en el scraping. Revisa los logs.")
     
     print("=" * 50)
     print("✨ Proceso completado")
