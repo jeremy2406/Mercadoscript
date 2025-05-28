@@ -26,15 +26,15 @@ class JumboSinglePageScraper:
         
         # Categorías principales objetivo
         self.target_categories = {
-            "supermercado": ["supermercado", "mercado", "alimentos", "comida"],
-            "belleza y salud": ["belleza", "salud", "cuidado personal", "higiene"],
-            "hogar": ["hogar", "cocina", "limpieza", "muebles"],
-            "electrodomésticos": ["electrodomésticos", "electrodomestico", "electro"],
-            "ferretería": ["ferretería", "ferreteria", "herramientas"],
-            "deportes": ["deportes", "fitness", "ejercicio"],
-            "bebés": ["bebés", "bebes", "niños", "niñas"],
-            "escolares y oficina": ["escolares", "oficina", "útiles", "libros"],
-            "juguetería": ["juguetería", "juguetes", "juegos"]
+            "Supermercado": ["supermercado", "mercado", "alimentos", "comida"],
+            "Belleza y Salud": ["belleza", "salud", "cuidado personal", "higiene"],
+            "Hogar": ["hogar", "cocina", "limpieza", "muebles"],
+            "Electrodomésticos": ["electrodomésticos", "electrodomestico", "electro"],
+            "Ferretería": ["ferretería", "ferreteria", "herramientas"],
+            "Deportes": ["deportes", "fitness", "ejercicio"],
+            "Bebés": ["bebés", "bebes", "niños", "niñas"],
+            "Escolares y Oficina": ["escolares", "oficina", "útiles", "libros"],
+            "Juguetería": ["juguetería", "juguetes", "juegos"]
         }
         
     def setup_driver(self):
@@ -209,7 +209,7 @@ class JumboSinglePageScraper:
         seen_urls = set()
         
         for sub in subcategories:
-            if sub['url'] not in seen_urls and len(unique_subcategories) < 5:  # Máximo 5 subcategorías por categoría
+            if sub['url'] not in seen_urls and len(unique_subcategories) < 10:  # Máximo 5 subcategorías por categoría
                 seen_urls.add(sub['url'])
                 unique_subcategories.append(sub)
                 logger.info(f"   ↳ Subcategoría encontrada: {sub['name']}")
@@ -245,7 +245,7 @@ class JumboSinglePageScraper:
             containers = soup.select(selector)
             if containers:
                 logger.info(f"🔍 Usando selector: {selector} - Encontrados: {len(containers)}")
-                for container in containers[:20]:  # Máximo 20 productos por página
+                for container in containers[:30]:  # Máximo 20 productos por página
                     product = self.extract_product_data(container, category)
                     if product:
                         products.append(product)
@@ -258,7 +258,7 @@ class JumboSinglePageScraper:
             for container in potential_products[:30]:
                 if container.find('img') and (container.find('h2') or container.find('h3') or container.find('h4')):
                     product = self.extract_product_data(container, category)
-                    if product and len(products) < 15:  # Máximo 15 productos
+                    if product and len(products) < 30:  # Máximo 15 productos
                         products.append(product)
         
         logger.info(f"📦 Extraídos {len(products)} productos de {category['name']}")
