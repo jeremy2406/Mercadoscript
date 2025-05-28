@@ -16,46 +16,58 @@ from collections import Counter
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class JumboSinglePageScraper:
-    def __init__(self, headless=True):
+class JumboCompleteScraper:
+    def __init__(self, headless=True, target_products=2000):
         self.base_url = "https://jumbo.com.do/"
         self.driver = None
         self.products_data = []
         self.headless = headless
         self.processed_urls = set()
+        self.target_products = target_products
+        self.unique_products = set()  # Para evitar duplicados
         
-        # Categorías principales objetivo
+        # Categorías principales objetivo (más específicas para República Dominicana)
         self.target_categories = {
-            "Supermercado": ["supermercado", "mercado", "alimentos", "comida"],
-            "Belleza y Salud": ["belleza", "salud", "cuidado personal", "higiene"],
-            "Hogar": ["hogar", "cocina", "limpieza", "muebles"],
-            "Electrodomésticos": ["electrodomésticos", "electrodomestico", "electro"],
-            "Ferretería": ["ferretería", "ferreteria", "herramientas"],
-            "Deportes": ["deportes", "fitness", "ejercicio"],
-            "Bebés": ["bebés", "bebes", "niños", "niñas"],
-            "Escolares y Oficina": ["escolares", "oficina", "útiles", "libros"],
-            "Juguetería": ["juguetería", "juguetes", "juegos"]
+            "Supermercado": ["supermercado", "mercado", "alimentos", "comida", "groceries", "abarrotes", "food"],
+            "Belleza y Salud": ["belleza", "salud", "cuidado personal", "higiene", "beauty", "health", "cosmetic"],
+            "Hogar": ["hogar", "cocina", "limpieza", "muebles", "home", "casa", "furniture"],
+            "Electrodomésticos": ["electrodomésticos", "electrodomestico", "electro", "appliances", "electronics"],
+            "Ferretería": ["ferretería", "ferreteria", "herramientas", "tools", "hardware", "construccion"],
+            "Deportes": ["deportes", "fitness", "ejercicio", "sports", "deporte"],
+            "Bebés": ["bebés", "bebes", "niños", "niñas", "baby", "kids", "infantil"],
+            "Oficina": ["oficina", "útiles", "escolares", "office", "school", "papeleria"],
+            "Juguetería": ["juguetes", "juegos", "toys", "games", "jugueteria"],
+            "Tecnología": ["tecnologia", "tech", "computacion", "celulares", "phones"],
+            "Ropa": ["ropa", "vestir", "clothing", "fashion", "textil"],
+            "Automóvil": ["auto", "carro", "vehiculo", "automotive", "car"]
         }
         
     def setup_driver(self):
-        """Configurar el driver de Selenium optimizado"""
+        """Configurar el driver de Selenium optimizado para JavaScript"""
         try:
             chrome_options = Options()
             if self.headless:
                 chrome_options.add_argument("--headless")
+            
+            # Opciones optimizadas para sitios JavaScript
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
             chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             
-            # Optimizaciones para velocidad
-            chrome_options.add_argument("--disable-images")
+            # Optimizaciones para velocidad manteniendo funcionalidad
             chrome_options.add_argument("--disable-extensions")
             chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--disable-logging")
+            chrome_options.add_argument("--disable-dev-tools")
             
             self.driver = webdriver.Chrome(options=chrome_options)
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            # Timeout optimizado
             self.driver.implicitly_wait(3)
             logger.info("✅ Driver configurado correctamente")
             return True
@@ -63,255 +75,296 @@ class JumboSinglePageScraper:
             logger.error(f"❌ Error configurando Selenium: {e}")
             return False
     
-    def get_page(self, url, max_retries=2):
-        """Cargar página con reintentos optimizados"""
+    def get_page_with_js_wait(self, url, max_retries=2):
+        """Cargar página esperando a que JavaScript termine de cargar"""
         for attempt in range(max_retries):
             try:
                 self.driver.get(url)
-                WebDriverWait(self.driver, 8).until(
+                
+                # Esperar a que el body esté presente
+                WebDriverWait(self.driver, 10).until(
                     EC.presence_of_element_located((By.TAG_NAME, 'body'))
                 )
-                time.sleep(1.5)
-                return BeautifulSoup(self.driver.page_source, 'html.parser')
+                
+                # Esperar un poco para JavaScript
+                time.sleep(2)
+                
+                # Scroll para activar lazy loading
+                self.driver.execute_script("window.scrollTo(0, 500);")
+                time.sleep(1)
+                self.driver.execute_script("window.scrollTo(0, 0);")
+                
+                soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+                text_content = soup.get_text(strip=True)
+                
+                if len(text_content) > 300:
+                    return soup
+                    
             except Exception as e:
-                logger.warning(f"⚠️ Intento {attempt + 1} fallido para {url}: {str(e)}")
+                logger.warning(f"⚠️ Intento {attempt + 1} fallido: {str(e)}")
                 if attempt < max_retries - 1:
                     time.sleep(2)
+        
         return None
 
     def find_main_categories(self):
-        """Buscar categorías principales con múltiples estrategias"""
-        soup = self.get_page(self.base_url)
+        """Buscar categorías principales con estrategias múltiples"""
+        soup = self.get_page_with_js_wait(self.base_url)
         if not soup:
             return []
         
         categories = []
         
-        # Estrategia 1: Buscar en el menú de navegación principal
-        nav_containers = [
-            ('nav', 'nav'), 
-            ('div', 'menu'), 
-            ('div', 'navigation'),
-            ('ul', 'nav-list'),
-            ('div', 'categories'),
-            ('header', ''),
-            ('div', 'header')
+        # ESTRATEGIA 1: Navegación principal
+        nav_selectors = [
+            'nav a', 'header nav a', '.navbar a', '.nav a', '.navigation a',
+            '.main-menu a', '.primary-menu a', '.menu-principal a',
+            '.header-menu a', '.top-menu a', '.main-nav a'
         ]
         
-        for tag, class_part in nav_containers:
-            if class_part:
-                elements = soup.find_all(tag, class_=lambda x: x and class_part in x.lower())
-            else:
-                elements = soup.find_all(tag)
+        for selector in nav_selectors:
+            links = soup.select(selector)
+            logger.info(f"🔍 Selector '{selector}': {len(links)} enlaces")
             
-            for element in elements:
-                for link in element.find_all('a', href=True):
-                    name = link.get_text(strip=True)
-                    url = link['href']
-                    if self.is_target_category(name) and len(name) > 3:
-                        full_url = urljoin(self.base_url, url)
-                        categories.append({
-                            'name': self.normalize_category_name(name),
-                            'url': full_url,
-                            'parent': None
-                        })
-        
-        # Estrategia 2: Buscar enlaces con texto que coincida con categorías objetivo
-        if not categories:
-            for link in soup.find_all('a', href=True):
-                name = link.get_text(strip=True)
-                if self.is_target_category(name) and len(name) > 3:
-                    url = link['href']
-                    full_url = urljoin(self.base_url, url)
+            for link in links:
+                text = link.get_text(strip=True)
+                href = link.get('href', '')
+                
+                if self.is_potential_category(text, href):
+                    full_url = urljoin(self.base_url, href)
                     categories.append({
-                        'name': self.normalize_category_name(name),
+                        'name': self.normalize_category_name(text),
                         'url': full_url,
-                        'parent': None
+                        'parent': None,
+                        'level': 'main'
                     })
         
-        # Eliminar duplicados
-        unique_categories = []
-        seen_urls = set()
+        # ESTRATEGIA 2: Búsqueda por palabras clave en todos los enlaces
+        if len(categories) < 8:
+            all_links = soup.find_all('a', href=True)
+            logger.info(f"🔍 Analizando {len(all_links)} enlaces por palabras clave")
+            
+            for link in all_links:
+                text = link.get_text(strip=True)
+                href = link.get('href', '')
+                
+                if self.is_target_category(text) and len(text) > 3 and len(text) < 50:
+                    full_url = urljoin(self.base_url, href)
+                    categories.append({
+                        'name': self.normalize_category_name(text),
+                        'url': full_url,
+                        'parent': None,
+                        'level': 'main'
+                    })
         
-        for cat in categories:
-            if cat['url'] not in seen_urls and '/categoria' in cat['url'] or '/category' in cat['url']:
-                seen_urls.add(cat['url'])
-                unique_categories.append(cat)
-                logger.info(f"✅ Categoría encontrada: {cat['name']}")
+        # Limpiar duplicados
+        unique_categories = self.clean_categories(categories)
         
-        return unique_categories[:9]  # Limitar a máximo 9 categorías principales
+        logger.info(f"📊 CATEGORÍAS PRINCIPALES ENCONTRADAS: {len(unique_categories)}")
+        for cat in unique_categories:
+            logger.info(f"   📂 {cat['name']} -> {cat['url']}")
+        
+        return unique_categories
     
-    def is_target_category(self, name):
-        """Determinar si el nombre coincide con nuestras categorías objetivo"""
-        name_lower = name.lower()
-        for category, keywords in self.target_categories.items():
-            if any(keyword in name_lower for keyword in keywords):
-                return True
-        return False
-    
-    def normalize_category_name(self, name):
-        """Normalizar el nombre de la categoría según nuestro mapeo"""
-        name_lower = name.lower()
-        for category, keywords in self.target_categories.items():
-            if any(keyword in name_lower for keyword in keywords):
-                return category.title()
-        return name.strip().title()
-    
-    def find_subcategories(self, category):
-        """Buscar subcategorías - SOLO primera página"""
-        soup = self.get_page(category['url'])
+    def find_subcategories(self, main_category, max_subcategories=15):
+        """Buscar subcategorías de una categoría principal"""
+        soup = self.get_page_with_js_wait(main_category['url'])
         if not soup:
             return []
         
         subcategories = []
         
-        # Estrategia 1: Buscar en sidebars y menús laterales
+        # ESTRATEGIA 1: Buscar en menús laterales y filtros
         sidebar_selectors = [
-            ('div', 'sidebar'),
-            ('div', 'filters'), 
-            ('div', 'categories'),
-            ('div', 'menu-lateral'),
-            ('nav', 'category-nav'),
-            ('ul', 'category-list')
+            '.sidebar a', '.filters a', '.categories a', 
+            '.menu-lateral a', '.category-nav a', '.subcategory a',
+            '[class*="filter"] a', '[class*="category"] a',
+            '[class*="submenu"] a', '[class*="subcategory"] a'
         ]
         
-        for tag, class_part in sidebar_selectors:
-            elements = soup.find_all(tag, class_=lambda x: x and class_part in x.lower())
-            for element in elements:
-                for link in element.find_all('a', href=True):
-                    name = link.get_text(strip=True)
-                    if name and len(name) > 2 and not any(x in name.lower() for x in ['ver todo', 'ver más', 'volver', 'todo', 'home', 'inicio']):
-                        url = link['href']
-                        full_url = urljoin(self.base_url, url)
-                        subcategories.append({
-                            'name': name,
-                            'url': full_url,
-                            'parent': category['name']
-                        })
+        for selector in sidebar_selectors:
+            links = soup.select(selector)
+            
+            for link in links:
+                text = link.get_text(strip=True)
+                href = link.get('href', '')
+                
+                if self.is_valid_subcategory(text, href, main_category):
+                    full_url = urljoin(self.base_url, href)
+                    subcategories.append({
+                        'name': text,
+                        'url': full_url,
+                        'parent': main_category['name'],
+                        'level': 'sub'
+                    })
         
-        # Estrategia 2: Buscar en secciones de categorías
-        if not subcategories:
-            category_sections = soup.find_all('div', class_=lambda x: x and ('category' in x.lower() or 'subcategory' in x.lower()))
-            for section in category_sections[:3]:  # Solo primeras 3 secciones
-                for link in section.find_all('a', href=True):
-                    name = link.get_text(strip=True)
-                    if name and len(name) > 2:
-                        url = link['href']
-                        full_url = urljoin(self.base_url, url)
-                        subcategories.append({
-                            'name': name,
-                            'url': full_url,
-                            'parent': category['name']
-                        })
+        # ESTRATEGIA 2: Buscar enlaces dentro de secciones de categoría
+        category_sections = soup.find_all(['div', 'section'], class_=lambda x: x and any(
+            keyword in x.lower() for keyword in ['category', 'filter', 'menu', 'nav']
+        ))
         
-        # Eliminar duplicados y limitar cantidad
-        unique_subcategories = []
-        seen_urls = set()
+        for section in category_sections:
+            links = section.find_all('a', href=True)
+            for link in links:
+                text = link.get_text(strip=True)
+                href = link.get('href', '')
+                
+                if self.is_valid_subcategory(text, href, main_category):
+                    full_url = urljoin(self.base_url, href)
+                    subcategories.append({
+                        'name': text,
+                        'url': full_url,
+                        'parent': main_category['name'],
+                        'level': 'sub'
+                    })
         
-        for sub in subcategories:
-            if sub['url'] not in seen_urls and len(unique_subcategories) < 10:  # Máximo 5 subcategorías por categoría
-                seen_urls.add(sub['url'])
-                unique_subcategories.append(sub)
-                logger.info(f"   ↳ Subcategoría encontrada: {sub['name']}")
+        # Limpiar y limitar subcategorías
+        cleaned_subs = self.clean_categories(subcategories)[:max_subcategories]
         
-        return unique_subcategories
+        logger.info(f"   📁 Encontradas {len(cleaned_subs)} subcategorías para {main_category['name']}")
+        for sub in cleaned_subs:
+            logger.info(f"      ↳ {sub['name']}")
+        
+        return cleaned_subs
     
-    def extract_products_from_page(self, category):
-        """Extraer productos SOLO de la primera página"""
-        soup = self.get_page(category['url'])
-        if not soup:
-            return []
+    def find_pagination_links(self, soup, current_url):
+        """Buscar enlaces de paginación en la página actual"""
+        pagination_links = []
         
+        # Selectores comunes para paginación
+        pagination_selectors = [
+            '.pagination a', '.pager a', '.page-nav a',
+            '[class*="page"] a', '[class*="next"] a',
+            '.paginacion a', '.paginas a'
+        ]
+        
+        for selector in pagination_selectors:
+            links = soup.select(selector)
+            for link in links:
+                href = link.get('href', '')
+                text = link.get_text(strip=True).lower()
+                
+                # Buscar enlaces "siguiente" o números de página
+                if href and (text.isdigit() or 'next' in text or 'siguiente' in text or 'más' in text):
+                    full_url = urljoin(self.base_url, href)
+                    if full_url != current_url and full_url not in pagination_links:
+                        pagination_links.append(full_url)
+        
+        # También buscar parámetros de página en la URL
+        if '?' in current_url:
+            base_url = current_url.split('?')[0]
+            for page_num in range(2, 6):  # Páginas 2-5
+                page_url = f"{base_url}?page={page_num}"
+                if page_url not in pagination_links:
+                    pagination_links.append(page_url)
+        
+        return pagination_links[:4]  # Máximo 4 páginas adicionales
+    
+    def extract_products_complete(self, category, max_pages=5):
+        """Extraer productos de una categoría con paginación"""
+        all_products = []
+        pages_to_process = [category['url']]
+        
+        # Obtener primera página y buscar paginación
+        soup = self.get_page_with_js_wait(category['url'])
+        if soup:
+            # Extraer productos de la primera página
+            products = self.extract_products_from_page(soup, category)
+            all_products.extend(products)
+            
+            # Buscar más páginas
+            pagination_links = self.find_pagination_links(soup, category['url'])
+            pages_to_process.extend(pagination_links[:max_pages-1])
+        
+        # Procesar páginas adicionales
+        for i, page_url in enumerate(pages_to_process[1:], 2):
+            if len(all_products) >= 50:  # Límite por categoría
+                break
+                
+            logger.info(f"      📄 Página {i}: {page_url}")
+            page_soup = self.get_page_with_js_wait(page_url)
+            if page_soup:
+                page_products = self.extract_products_from_page(page_soup, category)
+                if page_products:
+                    all_products.extend(page_products)
+                else:
+                    break  # Si no hay productos, probablemente no hay más páginas
+            
+            time.sleep(1)  # Pausa entre páginas
+        
+        logger.info(f"📦 Total extraído de {category['name']}: {len(all_products)} productos")
+        return all_products
+    
+    def extract_products_from_page(self, soup, category):
+        """Extraer productos de una página específica"""
         products = []
         
-        # Múltiples selectores para encontrar productos
+        # Selectores optimizados para productos
         product_selectors = [
-            # Selectores específicos comunes
-            'div[class*="product-item"]',
-            'div[class*="product-card"]', 
-            'div[class*="product-grid"]',
-            'div[class*="item-product"]',
-            'li[class*="product"]',
-            'div[class*="product"]',
-            # Selectores más generales
-            '.product-item',
-            '.product-card',
-            '.product',
-            '[data-product]'
+            '[class*="product-item"]', '[class*="product-card"]', 
+            '[class*="item-product"]', '[class*="product"]',
+            '[data-product]', '[data-item]',
+            '.card', '.tile', '[class*="card"]'
         ]
         
-        # Intentar cada selector
         for selector in product_selectors:
             containers = soup.select(selector)
+            
             if containers:
-                logger.info(f"🔍 Usando selector: {selector} - Encontrados: {len(containers)}")
-                for container in containers[:30]:  # Máximo 20 productos por página
+                logger.info(f"      🔍 Usando selector '{selector}': {len(containers)} elementos")
+                
+                for container in containers:
                     product = self.extract_product_data(container, category)
                     if product:
-                        products.append(product)
-                break  # Si encontramos productos con un selector, no probar otros
+                        # Evitar duplicados usando nombre + categoría como clave
+                        product_key = f"{product['nombre'].lower()}_{product['categoria']}"
+                        if product_key not in self.unique_products:
+                            self.unique_products.add(product_key)
+                            products.append(product)
+                
+                if products:  # Si encontramos productos, no probar más selectores
+                    break
         
-        # Si no encontramos nada, buscar por estructura HTML típica
+        # Método alternativo si no encontramos productos
         if not products:
-            # Buscar contenedores que tengan imagen + texto
-            potential_products = soup.find_all('div', class_=True)
-            for container in potential_products[:30]:
-                if container.find('img') and (container.find('h2') or container.find('h3') or container.find('h4')):
-                    product = self.extract_product_data(container, category)
-                    if product and len(products) < 30:  # Máximo 15 productos
+            products = self.alternative_product_extraction(soup, category)
+        
+        return products[:40]  # Máximo 40 productos por página
+    
+    def alternative_product_extraction(self, soup, category):
+        """Método alternativo para extraer productos"""
+        products = []
+        
+        # Buscar divs que contengan imagen + título
+        all_divs = soup.find_all('div')[:200]  # Limitar búsqueda
+        
+        for div in all_divs:
+            if len(products) >= 30:
+                break
+                
+            img = div.find('img')
+            title_elem = div.find(['h1', 'h2', 'h3', 'h4', 'h5', 'span', 'a'])
+            
+            if img and title_elem:
+                product = self.extract_product_data(div, category)
+                if product:
+                    product_key = f"{product['nombre'].lower()}_{product['categoria']}"
+                    if product_key not in self.unique_products:
+                        self.unique_products.add(product_key)
                         products.append(product)
         
-        logger.info(f"📦 Extraídos {len(products)} productos de {category['name']}")
         return products
     
     def extract_product_data(self, container, category):
         """Extraer datos del producto desde el contenedor"""
         try:
-            # Extraer nombre del producto
-            name = None
-            name_selectors = [
-                'h1', 'h2', 'h3', 'h4', 
-                '[class*="name"]', '[class*="title"]', 
-                '[class*="product-name"]', 'a[title]'
-            ]
-            
-            for selector in name_selectors:
-                element = container.select_one(selector)
-                if element:
-                    text = element.get_text(strip=True)
-                    if text and len(text) > 3:
-                        name = text
-                        break
-            
-            # Si no encontramos nombre, intentar con atributos de imagen
-            if not name:
-                img = container.find('img')
-                if img and img.get('alt'):
-                    name = img['alt'].strip()
-                elif img and img.get('title'):
-                    name = img['title'].strip()
-            
+            # Extraer nombre
+            name = self.extract_product_name(container)
             if not name or not self.is_valid_product_name(name):
                 return None
             
             # Extraer precio
-            price = None
-            price_selectors = [
-                '[class*="price"]', '[class*="precio"]',
-                '.currency', '[data-price]', '.cost'
-            ]
-            
-            for selector in price_selectors:
-                elements = container.select(selector)
-                for element in elements:
-                    price_text = element.get_text(strip=True)
-                    if price_text:
-                        parsed_price = self.parse_price(price_text)
-                        if parsed_price:
-                            price = parsed_price
-                            break
-                if price:
-                    break
+            price = self.extract_product_price(container)
             
             # Construir categoría completa
             full_category = category['name']
@@ -319,33 +372,72 @@ class JumboSinglePageScraper:
                 full_category = f"{category['parent']} > {category['name']}"
             
             return {
-                'nombre': name[:150],  # Limitar longitud
+                'nombre': name[:120],
                 'precio': price or 'Precio no disponible',
                 'categoria': full_category
             }
             
-        except Exception as e:
-            logger.debug(f"Error extrayendo producto: {e}")
+        except Exception:
             return None
+    
+    def extract_product_name(self, container):
+        """Extraer nombre del producto"""
+        name_selectors = [
+            'h1', 'h2', 'h3', 'h4', 'h5',
+            '[class*="name"]', '[class*="title"]', '[class*="product-name"]',
+            '[class*="item-name"]', '[data-name]', 'a[title]'
+        ]
+        
+        for selector in name_selectors:
+            element = container.select_one(selector)
+            if element:
+                text = element.get_text(strip=True)
+                if text and 3 < len(text) < 150:
+                    return text
+        
+        # Método alternativo con atributos de imagen
+        img = container.find('img')
+        if img:
+            for attr in ['alt', 'title', 'data-name']:
+                value = img.get(attr, '').strip()
+                if value and 3 < len(value) < 150:
+                    return value
+        
+        return None
+    
+    def extract_product_price(self, container):
+        """Extraer precio del producto"""
+        price_selectors = [
+            '[class*="price"]', '[class*="precio"]', '[class*="cost"]',
+            '[data-price]', '.currency', '[class*="amount"]'
+        ]
+        
+        for selector in price_selectors:
+            elements = container.select(selector)
+            for element in elements:
+                price_text = element.get_text(strip=True)
+                parsed_price = self.parse_price(price_text)
+                if parsed_price:
+                    return parsed_price
+        
+        return None
     
     def parse_price(self, price_text):
         """Parsear y formatear precio"""
         try:
-            # Limpiar texto y buscar números
             clean_text = re.sub(r'[^\d.,]', '', price_text)
             
-            # Buscar patrón de precio
             price_patterns = [
-                r'(\d{1,3}(?:[,.]\d{3})*(?:[.,]\d{2})?)',  # 1,234.56 o 1.234,56
-                r'(\d+[.,]\d{2})',  # 123.45 o 123,45
-                r'(\d+)'  # Solo números
+                r'(\d{1,3}(?:[,.]\d{3})*(?:[.,]\d{2})?)',
+                r'(\d+[.,]\d{2})',
+                r'(\d+)'
             ]
             
             for pattern in price_patterns:
                 match = re.search(pattern, clean_text)
                 if match:
                     num_str = match.group(1)
-                    # Normalizar formato
+                    
                     if ',' in num_str and '.' in num_str:
                         if num_str.rindex(',') > num_str.rindex('.'):
                             num_str = num_str.replace('.', '').replace(',', '.')
@@ -358,89 +450,151 @@ class JumboSinglePageScraper:
                     
                     price = float(num_str)
                     
-                    # Validar rango razonable (1 peso a 500,000 pesos)
                     if 1 <= price <= 500000:
                         return f"RD${price:,.2f}"
-                    
+            
             return None
         except:
             return None
     
-    def is_valid_product_name(self, name):
-        """Validar que el nombre sea de un producto real"""
-        if not name or len(name) < 3 or len(name) > 150:
+    def is_potential_category(self, text, href):
+        """Determinar si un enlace es una categoría potencial"""
+        if not text or not href:
             return False
         
-        # Términos que indican que NO es un producto
+        text_lower = text.lower().strip()
+        href_lower = href.lower()
+        
+        # Filtros negativos
+        negative_keywords = [
+            'login', 'cuenta', 'carrito', 'buscar', 'ayuda', 'contacto',
+            'facebook', 'twitter', 'instagram', 'newsletter'
+        ]
+        
+        if any(neg in text_lower for neg in negative_keywords):
+            return False
+        
+        # Filtros positivos
+        positive_url_patterns = [
+            'categoria', 'category', 'departamento', 'department',
+            'seccion', 'section', '/c/', '/cat/'
+        ]
+        
+        return any(pattern in href_lower for pattern in positive_url_patterns) or self.is_target_category(text)
+    
+    def is_target_category(self, name):
+        """Verificar si coincide con categorías objetivo"""
+        if not name:
+            return False
+        name_lower = name.lower()
+        return any(any(keyword in name_lower for keyword in keywords) 
+                  for keywords in self.target_categories.values())
+    
+    def normalize_category_name(self, name):
+        """Normalizar nombre de categoría"""
+        name_lower = name.lower()
+        for category, keywords in self.target_categories.items():
+            if any(keyword in name_lower for keyword in keywords):
+                return category
+        return name.strip().title()
+    
+    def is_valid_subcategory(self, text, href, main_category):
+        """Validar si es una subcategoría válida"""
+        if not text or not href or len(text) < 3 or len(text) > 80:
+            return False
+        
+        text_lower = text.lower()
         invalid_terms = [
-            'ver más', 'ver todo', 'comprar', 'añadir', 'agregar',
-            'oferta', 'promoción', 'descuento', 'volver',
-            'página', 'siguiente', 'anterior', 'mostrar', 'ordenar',
-            'filtro', 'filtros', 'categoría', 'marca', 'buscar',
-            'carrito', 'cuenta', 'login', 'iniciar', 'registrar'
+            'ver todo', 'ver más', 'mostrar todo', 'volver', 'home',
+            'página', 'siguiente', 'anterior', 'filtro'
+        ]
+        
+        return not any(term in text_lower for term in invalid_terms)
+    
+    def is_valid_product_name(self, name):
+        """Validar nombre de producto"""
+        if not name or len(name) < 3 or len(name) > 120:
+            return False
+        
+        invalid_terms = [
+            'ver más', 'comprar', 'añadir', 'carrito', 'login',
+            'página', 'siguiente', 'filtro', 'ordenar'
         ]
         
         name_lower = name.lower()
-        if any(term in name_lower for term in invalid_terms):
-            return False
-        
-        # Debe tener al menos una letra
-        return bool(re.search(r'[a-zA-ZáéíóúÁÉÍÓÚñÑ]', name))
+        return not any(term in name_lower for term in invalid_terms) and \
+               bool(re.search(r'[a-zA-ZáéíóúÁÉÍÓÚñÑ]', name))
     
-    def scrape_all_products(self):
-        """Scrapear productos - SOLO primera página de cada categoría/subcategoría"""
-        logger.info("🚀 Iniciando scraping de productos (solo primera página)...")
+    def clean_categories(self, categories):
+        """Limpiar y eliminar duplicados de categorías"""
+        cleaned = []
+        seen_urls = set()
+        seen_names = set()
+        
+        for cat in categories:
+            url = cat['url']
+            name = cat['name'].lower()
+            
+            if url not in seen_urls and name not in seen_names:
+                seen_urls.add(url)
+                seen_names.add(name)
+                cleaned.append(cat)
+        
+        return cleaned
+    
+    def scrape_complete(self):
+        """Proceso completo de scraping con todas las categorías y subcategorías"""
+        logger.info(f"🚀 Iniciando scraping completo - Objetivo: {self.target_products} productos")
         
         if not self.setup_driver():
             return False
         
         try:
-            # Obtener categorías principales
+            # Paso 1: Obtener categorías principales
             main_categories = self.find_main_categories()
             if not main_categories:
                 logger.error("❌ No se encontraron categorías principales")
                 return False
             
-            logger.info(f"📂 Se procesarán {len(main_categories)} categorías principales")
+            logger.info(f"📂 Encontradas {len(main_categories)} categorías principales")
             
-            # Procesar cada categoría principal
-            for i, category in enumerate(main_categories, 1):
-                if category['url'] in self.processed_urls:
-                    continue
+            # Paso 2: Procesar cada categoría principal
+            for i, main_cat in enumerate(main_categories, 1):
+                if len(self.products_data) >= self.target_products:
+                    logger.info(f"🎯 Objetivo de {self.target_products} productos alcanzado")
+                    break
                 
-                self.processed_urls.add(category['url'])
-                logger.info(f"\n📦 [{i}/{len(main_categories)}] Procesando: {category['name']}")
+                logger.info(f"\n📦 [{i}/{len(main_categories)}] PROCESANDO: {main_cat['name']}")
+                logger.info(f"🔗 URL: {main_cat['url']}")
                 
-                # Extraer productos de la categoría principal (primera página)
-                products = self.extract_products_from_page(category)
-                self.products_data.extend(products)
+                # Extraer productos de la categoría principal
+                main_products = self.extract_products_complete(main_cat)
+                self.products_data.extend(main_products)
                 
-                # Buscar y procesar subcategorías (solo primera página de cada una)
-                subcategories = self.find_subcategories(category)
+                logger.info(f"📊 Productos acumulados: {len(self.products_data)}")
+                
+                # Paso 3: Buscar y procesar subcategorías
+                subcategories = self.find_subcategories(main_cat)
                 
                 if subcategories:
-                    logger.info(f"   📁 Encontradas {len(subcategories)} subcategorías")
+                    logger.info(f"   📁 Procesando {len(subcategories)} subcategorías...")
                     
-                    for j, subcategory in enumerate(subcategories, 1):
-                        if subcategory['url'] in self.processed_urls:
-                            continue
+                    for j, sub_cat in enumerate(subcategories, 1):
+                        if len(self.products_data) >= self.target_products:
+                            break
                         
-                        self.processed_urls.add(subcategory['url'])
-                        logger.info(f"      ↳ [{j}/{len(subcategories)}] {subcategory['name']}")
+                        logger.info(f"      ↳ [{j}/{len(subcategories)}] {sub_cat['name']}")
                         
-                        # Extraer productos de la subcategoría (primera página)
-                        sub_products = self.extract_products_from_page(subcategory)
+                        # Extraer productos de subcategoría
+                        sub_products = self.extract_products_complete(sub_cat)
                         self.products_data.extend(sub_products)
-                        time.sleep(0.5)  # Pausa mínima entre subcategorías
-                else:
-                    logger.info("   📁 No se encontraron subcategorías")
+                        
+                        time.sleep(1)  # Pausa entre subcategorías
                 
-                time.sleep(1)  # Pausa entre categorías principales
-                
-                # Mostrar progreso
-                total_products = len(self.products_data)
-                logger.info(f"   📊 Total acumulado: {total_products} productos")
+                logger.info(f"📊 Total después de {main_cat['name']}: {len(self.products_data)} productos")
+                time.sleep(2)  # Pausa entre categorías principales
             
+            logger.info(f"\n🎉 SCRAPING COMPLETADO - Total productos: {len(self.products_data)}")
             return len(self.products_data) > 0
             
         finally:
@@ -448,8 +602,8 @@ class JumboSinglePageScraper:
                 self.driver.quit()
                 logger.info("🔚 Driver cerrado")
     
-    def save_results(self, filename='jumbo_productos_single_page.csv'):
-        """Guardar resultados en CSV"""
+    def save_results(self, filename='jumbo_productos_completo.csv'):
+        """Guardar resultados completos en CSV"""
         if not self.products_data:
             logger.warning("⚠️ No hay productos para guardar")
             return
@@ -461,55 +615,80 @@ class JumboSinglePageScraper:
                 writer.writerows(self.products_data)
             
             logger.info(f"💾 Datos guardados en {filename}")
-            print(f"\n✅ Resultados guardados en {filename}")
-            print(f"📊 Total de productos: {len(self.products_data)}")
+            print(f"\n✅ RESULTADOS GUARDADOS EN {filename}")
+            print(f"📊 TOTAL DE PRODUCTOS: {len(self.products_data)}")
             
-            # Estadísticas por categoría principal
+            # Estadísticas detalladas
             main_categories = Counter()
-            for product in self.products_data:
-                main_cat = product['categoria'].split('>')[0].strip()
-                main_categories[main_cat] += 1
+            subcategories = Counter()
             
-            print("\n📦 Productos por categoría principal:")
+            for product in self.products_data:
+                categoria = product['categoria']
+                if '>' in categoria:
+                    main_cat, sub_cat = categoria.split('>', 1)
+                    main_categories[main_cat.strip()] += 1
+                    subcategories[categoria] += 1
+                else:
+                    main_categories[categoria] += 1
+            
+            print(f"\n📦 PRODUCTOS POR CATEGORÍA PRINCIPAL:")
             for cat, count in main_categories.most_common():
                 print(f"   {cat}: {count} productos")
-                
-            # Mostrar algunos ejemplos
-            print("\n🔍 Ejemplos de productos encontrados:")
-            for i, product in enumerate(self.products_data[:5], 1):
-                print(f"   {i}. {product['nombre']} - {product['precio']} ({product['categoria']})")
+            
+            print(f"\n🔍 TOP 10 SUBCATEGORÍAS:")
+            for cat, count in subcategories.most_common(10):
+                print(f"   {cat}: {count} productos")
+            
+            # Ejemplos de productos
+            print(f"\n📝 EJEMPLOS DE PRODUCTOS ENCONTRADOS:")
+            for i, product in enumerate(self.products_data[:8], 1):
+                print(f"   {i}. {product['nombre']} - {product['precio']}")
+                print(f"      Categoría: {product['categoria']}")
             
         except Exception as e:
             logger.error(f"❌ Error guardando CSV: {e}")
 
 def main():
-    print("🛒 JUMBO.COM.DO - EXTRACTOR DE PRIMERA PÁGINA")
-    print("=" * 60)
-    print("🔍 Este script extraerá productos SOLO de la primera página")
-    print("   de cada categoría y subcategoría encontrada.")
-    print("   Sin paginación - Más rápido y eficiente.")
-    print("=" * 60)
+    print("🛒 JUMBO.COM.DO - SCRAPER COMPLETO")
+    print("=" * 80)
+    print("🎯 EXTRACCIÓN COMPLETA DE PRODUCTOS")
+    print("📂 Todas las categorías principales y subcategorías")
+    print("📄 Múltiples páginas por categoría")
+    print("🔄 Sistema anti-duplicados integrado")
+    print("=" * 80)
+    
+    # Configurar objetivo de productos
+    try:
+        target = int(input("¿Cuántos productos necesitas? (por defecto 2000): ") or "2000")
+        if target < 100:
+            target = 2000
+    except:
+        target = 2000
     
     # Configurar modo headless
     headless = True
-    respuesta = input("¿Ejecutar en modo visible? (s/N): ").lower()
+    respuesta = input("¿Ejecutar en modo visible para monitoreo? (s/N): ").lower()
     if respuesta in ['s', 'si', 'sí']:
         headless = False
+        print("🖥️  Ejecutando en modo visible")
+    
+    print(f"\n🎯 Objetivo: {target} productos únicos")
+    print("🚀 Iniciando extracción completa...")
     
     # Ejecutar scraper
     start_time = time.time()
-    scraper = JumboSinglePageScraper(headless=headless)
+    scraper = JumboCompleteScraper(headless=headless, target_products=target)
     
-    print("\n🚀 Iniciando extracción...")
-    if scraper.scrape_all_products():
+    if scraper.scrape_complete():
         scraper.save_results()
         elapsed_time = time.time() - start_time
-        print(f"\n⏱️  Tiempo total: {elapsed_time:.1f} segundos")
-        print("🎉 ¡Proceso completado exitosamente!")
+        print(f"\n⏱️  TIEMPO TOTAL: {elapsed_time:.1f} segundos")
+        print(f"⚡ VELOCIDAD: {len(scraper.products_data)/(elapsed_time/60):.1f} productos/minuto")
+        print("🎉 ¡PROCESO COMPLETADO EXITOSAMENTE!")
     else:
         print("❌ No se pudieron extraer productos")
     
-    print("=" * 60)
+    print("=" * 80)
 
 if __name__ == "__main__":
     main()
