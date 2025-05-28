@@ -468,7 +468,7 @@ class JumboCompleteScraper:
         # Filtros negativos
         negative_keywords = [
             'login', 'cuenta', 'carrito', 'buscar', 'ayuda', 'contacto',
-            'facebook', 'twitter', 'instagram', 'newsletter'
+            'facebook', 'twitter', 'instagram', 'newsletter' ,'whatsapp'
         ]
         
         if any(neg in text_lower for neg in negative_keywords):
@@ -506,7 +506,7 @@ class JumboCompleteScraper:
         text_lower = text.lower()
         invalid_terms = [
             'ver todo', 'ver más', 'mostrar todo', 'volver', 'home',
-            'página', 'siguiente', 'anterior', 'filtro'
+            'página', 'siguiente', 'anterior', 'filtro', 'casa cuesta'
         ]
         
         return not any(term in text_lower for term in invalid_terms)
